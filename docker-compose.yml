@@ -1,0 +1,56 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oscu}:${POSTGRES_PASSWORD:-oscu}@db:5432/${POSTGRES_DB:-oscu_gateway}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/srv/app/app
+      - ./alembic:/srv/app/alembic
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-oscu}:${POSTGRES_PASSWORD:-oscu}@db:5432/${POSTGRES_DB:-oscu_gateway}
+    volumes:
+      - ./app:/srv/app/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: celery -A app.workers.celery_app worker --beat --loglevel=INFO
+
+  db:
+    image: postgres:16-alpine
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-oscu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oscu}
+      POSTGRES_DB: ${POSTGRES_DB:-oscu_gateway}
+    ports:
+      - "5432:5432"
+    volumes:
+      - oscu_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oscu}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  oscu_pg_data:
