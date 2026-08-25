@@ -7,9 +7,9 @@ in the repo root for the full technical specification this project implements.
 ## Status
 
 Under active build, phase by phase — see the spec's "BUILD PHASES" section for the roadmap.
-Currently: Phase 0 (project scaffold, `/v1/health`, Alembic baseline).
+Currently: Phase 1 (core data model — SQLAlchemy models, Alembic migration, round-trip tests).
 
-## Running locally
+## Running locally (Docker)
 
 ```bash
 cp .env.example .env
@@ -24,6 +24,24 @@ make migrate     # alembic upgrade head
 make lint        # ruff
 make fmt          # black
 make typecheck    # mypy
+```
+
+## Running locally (no Docker)
+
+```bash
+python3.11 -m venv venv
+./venv/bin/pip install -e ".[dev]"
+```
+
+Point `DATABASE_URL` at any disposable Postgres you have (local install, `pg_ctlcluster`, etc.) —
+`app/db/models.py`'s Postgres-specific column types (`ARRAY`, `JSONB`, `UUID`) mean SQLite won't
+work as a stand-in. Then:
+
+```bash
+./venv/bin/alembic upgrade head
+./venv/bin/uvicorn app.main:app --reload
+./venv/bin/pytest
+./venv/bin/ruff check app tests && ./venv/bin/mypy app && ./venv/bin/black --check app tests
 ```
 
 ## Pointing at KRA sandbox vs production
