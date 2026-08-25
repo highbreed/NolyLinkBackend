@@ -1,14 +1,18 @@
-"""Shared pytest fixtures: an async DB session against a throwaway schema on DATABASE_URL.
+"""Shared pytest fixtures: an async DB session against a disposable schema.
 
-Point DATABASE_URL (env var or .env) at a disposable Postgres instance before running these
-tests — e.g. the docker-compose `db` service, or a local/testcontainers Postgres. Tables are
-created once per test session and each test runs inside a transaction that's rolled back, so
-tests don't need to clean up after themselves and can run in any order.
+Tests run against Settings.resolved_test_database_url (DATABASE_URL's database name with a
+"_test" suffix, unless TEST_DATABASE_URL is set explicitly) — never against DATABASE_URL
+itself, so a test run's create_all/drop_all can never touch real dev/prod data. The test
+database is created automatically if it doesn't exist. Tables are created once per test
+session and each test runs inside a transaction that's rolled back, so tests don't need to
+clean up after themselves and can run in any order.
 """
 
 from collections.abc import AsyncGenerator
 
+import asyncpg
 import pytest_asyncio
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -20,9 +24,40 @@ from app.core.config import get_settings
 from app.db.models import Base
 
 
+async def _ensure_database_exists(test_url: str) -> None:
+    url = make_url(test_url)
+    assert url.database is not None
+    conn = await asyncpg.connect(
+        user=url.username,
+        password=url.password,
+        host=url.host,
+        port=url.port,
+        database="postgres",
+    )
+    try:
+        exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", url.database)
+    finally:
+        await conn.close()
+    if not exists:
+        raise RuntimeError(
+            f"Test database {url.database!r} does not exist. The app DB role usually lacks "
+            f"CREATEDB, so create it once as a superuser:\n"
+            f'  CREATE DATABASE "{url.database}" OWNER {url.username};'
+        )
+
+
 @pytest_asyncio.fixture(scope="session")
 async def db_engine() -> AsyncGenerator[AsyncEngine, None]:
-    engine = create_async_engine(get_settings().database_url)
+    settings = get_settings()
+    test_url = settings.resolved_test_database_url
+    assert test_url != settings.database_url, (
+        "resolved_test_database_url must never equal database_url — "
+        "this fixture runs create_all/drop_all and would destroy real data"
+    )
+
+    await _ensure_database_exists(test_url)
+
+    engine = create_async_engine(test_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine

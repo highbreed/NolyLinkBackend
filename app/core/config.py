@@ -4,6 +4,7 @@ from functools import lru_cache
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -13,6 +14,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_url: str = "postgresql+asyncpg://oscu:oscu@localhost:5432/oscu_gateway"
+    # Tests run against this database, never against database_url, so a test run's
+    # create_all/drop_all can't ever touch real dev/prod data. Defaults to database_url's
+    # database name with a "_test" suffix if not set explicitly.
+    test_database_url: str | None = None
+
+    @property
+    def resolved_test_database_url(self) -> str:
+        if self.test_database_url:
+            return self.test_database_url
+        url = make_url(self.database_url)
+        return url.set(database=f"{url.database}_test").render_as_string(hide_password=False)
 
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/1"

@@ -14,8 +14,10 @@ from app.db.models import Base
 config = context.config
 
 # Override the .ini's sqlalchemy.url with our app Settings so there's one source of truth
-# for the DB DSN (env var / .env), rather than duplicating it in alembic.ini.
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# for the DB DSN (env var / .env), rather than duplicating it in alembic.ini. "%" is escaped
+# since set_main_option writes through ConfigParser, which treats "%" as interpolation syntax
+# (a real risk here: percent-encoded special characters in the password, e.g. "%40" for "@").
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
