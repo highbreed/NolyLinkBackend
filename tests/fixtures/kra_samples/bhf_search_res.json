@@ -1,0 +1,22 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "bhfList": [
+      {
+        "bhfId": "00",
+        "bhfNm": "Head Office",
+        "bhfOpenDt": "20200101",
+        "prvncNm": "Nairobi",
+        "dstrtNm": "Nairobi",
+        "sctrNm": "Westlands",
+        "locDesc": "Along Waiyaki Way",
+        "hqYn": "Y",
+        "mgrNm": "Jane Doe",
+        "mgrTelNo": "0700000000",
+        "mgrEmail": "jane@example.com"
+      }
+    ]
+  }
+}

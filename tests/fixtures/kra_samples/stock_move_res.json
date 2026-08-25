@@ -1,0 +1,12 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "stockMoveList": [
+      {
+        "anything": "the source spec doesn't say"
+      }
+    ]
+  }
+}

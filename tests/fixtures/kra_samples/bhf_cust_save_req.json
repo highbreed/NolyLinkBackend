@@ -1,0 +1,13 @@
+{
+  "tin": "A123456789Z",
+  "bhfId": "00",
+  "cmcKey": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "custNo": "000000001",
+  "custTin": "P123456789A",
+  "custNm": "John Customer",
+  "adrs": "Moi Avenue",
+  "telNo": "0700000000",
+  "email": "john@example.com",
+  "faxNo": null,
+  "remark": null
+}

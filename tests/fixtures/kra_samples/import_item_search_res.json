@@ -1,0 +1,30 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "itemList": [
+      {
+        "taskCd": "T001",
+        "dclDe": "20200101",
+        "itemSeq": 1,
+        "dclNo": "D001",
+        "hsCd": "1006.30.00",
+        "itemNm": "Rice",
+        "orgnNatCd": "TH",
+        "exptNatCd": "TH",
+        "pkg": "10.00",
+        "pkgUnitCd": "BG",
+        "qty": "1000.00",
+        "qtyUnitCd": "KG",
+        "totWt": "1000.00",
+        "netWt": "950.00",
+        "spplrNm": "Thai Rice Exporters",
+        "agntNm": "Clearing Agent Ltd",
+        "invcFcurAmt": "500.00",
+        "invcFcurCd": "USD",
+        "invcFcurExcrt": "130.50"
+      }
+    ]
+  }
+}

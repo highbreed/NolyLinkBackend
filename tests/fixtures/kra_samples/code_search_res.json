@@ -1,0 +1,30 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "clsList": [
+      {
+        "cdCls": "04",
+        "cdClsNm": "Tax Type",
+        "cdClsDesc": "Tax Type",
+        "userDfnNm1": null,
+        "userDfnNm2": null,
+        "userDfnNm3": null,
+        "useYn": "Y",
+        "dtlList": [
+          {
+            "cd": "B",
+            "cdNm": "16%",
+            "cdDesc": "Standard Rate",
+            "srtOrd": 2,
+            "userDfnCd1": null,
+            "userDfnCd2": null,
+            "userDfnCd3": null,
+            "useYn": "Y"
+          }
+        ]
+      }
+    ]
+  }
+}

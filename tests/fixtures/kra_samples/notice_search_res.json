@@ -1,0 +1,17 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "noticeList": [
+      {
+        "noticeNo": "1",
+        "title": "System maintenance",
+        "cont": "Scheduled downtime this weekend",
+        "dtlUrl": "https://etims-api-sbx.kra.go.ke/notices/1",
+        "regrNm": "KRA Admin",
+        "regDt": "20200101000000"
+      }
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "tin": "A123456789Z",
+  "bhfId": "00",
+  "cmcKey": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "sarNo": "1",
+  "orgSarNo": "0",
+  "regTyCd": "M",
+  "sarTyCd": "02",
+  "ocrnDt": "20200226",
+  "totItemCnt": 1,
+  "totTaxblAmt": "200.00",
+  "totTaxAmt": "32.00",
+  "totAmt": "232.00",
+  "regrId": "admin",
+  "regrNm": "Administrator",
+  "modrId": "admin",
+  "modrNm": "Administrator",
+  "itemList": [
+    {
+      "itemSeq": 1,
+      "itemClsCd": "5020150101",
+      "itemNm": "Bread 400g",
+      "pkgUnitCd": "NT",
+      "pkg": "1.00",
+      "qtyUnitCd": "BA",
+      "qty": "2.00",
+      "prc": "100.00",
+      "splyAmt": "200.00",
+      "totDcAmt": "0.00",
+      "taxblAmt": "200.00",
+      "taxTyCd": "B",
+      "taxAmt": "32.00",
+      "totAmt": "232.00"
+    }
+  ]
+}

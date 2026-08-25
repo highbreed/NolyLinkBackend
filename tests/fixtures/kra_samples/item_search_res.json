@@ -1,0 +1,38 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "itemList": [
+      {
+        "itemClsCd": "5020150101",
+        "itemCd": "KE2NTBA0000012",
+        "itemTyCd": "2",
+        "itemNm": "Bread 400g",
+        "orgnNatCd": "KE",
+        "pkgUnitCd": "NT",
+        "qtyUnitCd": "BA",
+        "taxTyCd": "B",
+        "dftPrc": "100.00",
+        "isrcAplcbYn": "N",
+        "useYn": "Y",
+        "regrId": "admin",
+        "regrNm": "Administrator",
+        "modrId": "admin",
+        "modrNm": "Administrator",
+        "regBhfId": "00",
+        "rraModYn": "N",
+        "itemStdNm": null,
+        "btchNo": null,
+        "bcd": null,
+        "grpPrcL1": null,
+        "grpPrcL2": null,
+        "grpPrcL3": null,
+        "grpPrcL4": null,
+        "grpPrcL5": null,
+        "addInfo": null,
+        "sftyQty": null
+      }
+    ]
+  }
+}

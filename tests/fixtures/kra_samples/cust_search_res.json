@@ -1,0 +1,18 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "custList": [
+      {
+        "tin": "P123456789A",
+        "taxprNm": "John Customer",
+        "taxprSttsCd": "A",
+        "prvncNm": "Nairobi",
+        "dstrtNm": "Nairobi",
+        "sctrNm": "CBD",
+        "locDesc": "Moi Avenue"
+      }
+    ]
+  }
+}

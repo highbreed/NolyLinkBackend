@@ -1,0 +1,63 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "saleList": [
+      {
+        "spplrTin": "P987654321B",
+        "spplrBhfId": "00",
+        "spplrInvcNo": "SUP-INV-0001",
+        "rcptTyCd": "S",
+        "pmtTyCd": "01",
+        "cfmDt": "20200226143124",
+        "salesDt": "20200226",
+        "stockRlsDt": null,
+        "totItemCnt": 1,
+        "taxblAmtA": "0.00",
+        "taxblAmtB": "200.00",
+        "taxblAmtC": "0.00",
+        "taxblAmtD": "0.00",
+        "taxblAmtE": "0.00",
+        "taxRtA": "0.00",
+        "taxRtB": "16.00",
+        "taxRtC": "0.00",
+        "taxRtD": "0.00",
+        "taxRtE": "0.00",
+        "taxAmtA": "0.00",
+        "taxAmtB": "32.00",
+        "taxAmtC": "0.00",
+        "taxAmtD": "0.00",
+        "taxAmtE": "0.00",
+        "totTaxblAmt": "200.00",
+        "totTaxAmt": "32.00",
+        "totAmt": "232.00",
+        "itemList": [
+          {
+            "itemSeq": 1,
+            "itemCd": "KE2NTBA0000012",
+            "itemNm": "Bread 400g",
+            "pkgUnitCd": "NT",
+            "pkg": "1.00",
+            "qtyUnitCd": "BA",
+            "qty": "2.00",
+            "prc": "100.00",
+            "splyAmt": "200.00",
+            "dcRt": "0.00",
+            "dcAmt": "0.00",
+            "taxTyCd": "B",
+            "taxblAmt": "200.00",
+            "totTaxAmt": "32.00",
+            "totAmt": "232.00",
+            "itemClsCd": "5020150101",
+            "bcd": null,
+            "isrccCd": null,
+            "isrccNm": null,
+            "isrcRt": null,
+            "isrcAmt": null
+          }
+        ]
+      }
+    ]
+  }
+}

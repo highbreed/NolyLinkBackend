@@ -1,0 +1,12 @@
+{
+  "resultCd": "000",
+  "resultMsg": "It is succeeded",
+  "resultDt": "20200226143124",
+  "data": {
+    "curRcptNo": 1,
+    "totRcptNo": 1,
+    "intrlData": "11111111111111111111111111",
+    "rcptSign": "2222222222222222",
+    "sdcDateTime": "20200226143124"
+  }
+}
