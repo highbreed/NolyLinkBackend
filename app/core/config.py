@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     kra_base_url_prod: str = "https://etims-api.kra.go.ke/etims-api/"
     kra_base_url_sbx: str = "https://etims-api-sbx.kra.go.ke/etims-api/"
     kra_request_timeout_seconds: int = 30
+    # Spec §5.1: the source document doesn't print an explicit URL for item-composition save,
+    # so the path is a config flag rather than a hardcoded assumption (confirm before go-live).
+    kra_item_composition_endpoint: str = "/saveItemComposition"
 
     cmc_key_encryption_key: str = "changeme-generate-a-real-fernet-key"
 
