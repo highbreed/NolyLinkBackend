@@ -84,6 +84,24 @@ class Item(Base):
     branch: Mapped["Branch"] = relationship(back_populates="items")
 
 
+class ItemCodeSequence(Base):
+    """Backs the itemCd auto-generator (spec §8): one row per (tin, bhfId, orgnNatCd,
+    itemTyCd, pkgUnitCd, qtyUnitCd) composite, since a single Postgres SEQUENCE object can't
+    be dynamically keyed. next_seq is incremented atomically via an upsert in
+    app/services/item_code_generator.py.
+    """
+
+    __tablename__ = "item_code_sequences"
+
+    tin: Mapped[str] = mapped_column(CHAR(11), primary_key=True)
+    bhf_id: Mapped[str] = mapped_column(CHAR(2), primary_key=True)
+    orgn_nat_cd: Mapped[str] = mapped_column(String, primary_key=True)
+    item_ty_cd: Mapped[str] = mapped_column(String, primary_key=True)
+    pkg_unit_cd: Mapped[str] = mapped_column(String, primary_key=True)
+    qty_unit_cd: Mapped[str] = mapped_column(String, primary_key=True)
+    next_seq: Mapped[int] = mapped_column(default=1, server_default="1")
+
+
 class KraCodeList(Base):
     """Cached KRA code table rows, refreshed via /selectCodeList (spec §7, §11)."""
 
