@@ -49,6 +49,24 @@ class Settings(BaseSettings):
     # unset (None) means the endpoint refuses every request rather than defaulting open.
     admin_api_key: str | None = None
 
+    # First lastReqDt to send for a resource never synced before. Not specified anywhere in
+    # the source spec — a config flag rather than a hardcoded guess (spec §11).
+    kra_sync_initial_last_req_dt: str = "20200101000000"
+
+    # spec §20 item 2 / §7: unconfirmed whether Nation/Packaging/Quantity/Currency come back
+    # through /selectCodeList's normal cdCls mechanism, or are distributed separately. True
+    # (the spec text's own default reading) until sandbox access confirms otherwise; flipping
+    # it activates code_cache_service's static-seed fallback for those four classifications.
+    kra_large_code_tables_included_in_code_list: bool = True
+
+    # Polling cadence per resource (spec §11), in seconds. Only "codes" is used until later
+    # phases add their pollers.
+    kra_poll_interval_codes_seconds: int = 6 * 60 * 60
+    kra_poll_interval_notices_seconds: int = 60 * 60
+    kra_poll_interval_import_items_seconds: int = 15 * 60
+    kra_poll_interval_purchase_sales_seconds: int = 15 * 60
+    kra_poll_interval_stock_moves_seconds: int = 15 * 60
+
     @property
     def kra_base_url(self) -> str:
         return self.kra_base_url_sbx if self.kra_env == "sandbox" else self.kra_base_url_prod
