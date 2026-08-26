@@ -64,6 +64,8 @@ async def test_item_round_trip_and_branch_relationship(db_session):
         item_nm="Widget",
         tax_ty_cd="B",
         dft_prc=Decimal("199.99"),
+        pkg_unit_cd="NT",
+        qty_unit_cd="BA",
     )
     db_session.add(item)
     await db_session.flush()

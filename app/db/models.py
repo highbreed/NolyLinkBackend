@@ -79,6 +79,11 @@ class Item(Base):
     item_nm: Mapped[str] = mapped_column(String)
     tax_ty_cd: Mapped[str] = mapped_column(CHAR(1))
     dft_prc: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    # Not in spec §17's literal DDL, but needed to build sales line items (spec §6.6's
+    # TrnsSalesSaveWrItem requires pkgUnitCd/qtyUnitCd, and the client sales DTO in spec §9.2
+    # doesn't resupply them per line) — captured once at item registration (Phase 6) instead.
+    pkg_unit_cd: Mapped[str] = mapped_column(String)
+    qty_unit_cd: Mapped[str] = mapped_column(String)
     kra_synced_at: Mapped[datetime | None] = mapped_column()
 
     branch: Mapped["Branch"] = relationship(back_populates="items")
@@ -99,6 +104,19 @@ class ItemCodeSequence(Base):
     item_ty_cd: Mapped[str] = mapped_column(String, primary_key=True)
     pkg_unit_cd: Mapped[str] = mapped_column(String, primary_key=True)
     qty_unit_cd: Mapped[str] = mapped_column(String, primary_key=True)
+    next_seq: Mapped[int] = mapped_column(default=1, server_default="1")
+
+
+class SalesInvoiceSequence(Base):
+    """Backs invcNo (spec §6.6's required header field) — not given to us by KRA, so the
+    gateway assigns its own per-(tin, bhfId) sequence, same atomic-upsert pattern as
+    ItemCodeSequence.
+    """
+
+    __tablename__ = "sales_invoice_sequences"
+
+    tin: Mapped[str] = mapped_column(CHAR(11), primary_key=True)
+    bhf_id: Mapped[str] = mapped_column(CHAR(2), primary_key=True)
     next_seq: Mapped[int] = mapped_column(default=1, server_default="1")
 
 

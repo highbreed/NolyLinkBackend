@@ -84,6 +84,8 @@ async def create_item(
             existing.item_nm = payload.name
             existing.tax_ty_cd = req.taxTyCd
             existing.dft_prc = payload.unit_price
+            existing.pkg_unit_cd = req.pkgUnitCd
+            existing.qty_unit_cd = req.qtyUnitCd
             existing.kra_synced_at = now
             item = existing
         else:
@@ -95,6 +97,8 @@ async def create_item(
                 item_nm=payload.name,
                 tax_ty_cd=req.taxTyCd,
                 dft_prc=payload.unit_price,
+                pkg_unit_cd=req.pkgUnitCd,
+                qty_unit_cd=req.qtyUnitCd,
                 kra_synced_at=now,
             )
             db.add(item)
