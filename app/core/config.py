@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 30
 
+    # Provisional gate for POST /v1/devices/initialize, which must never be reachable by
+    # SAP/ERP clients (spec §12.2). Phase 9 replaces this with the full client authN/Z system;
+    # unset (None) means the endpoint refuses every request rather than defaulting open.
+    admin_api_key: str | None = None
+
     @property
     def kra_base_url(self) -> str:
         return self.kra_base_url_sbx if self.kra_env == "sandbox" else self.kra_base_url_prod

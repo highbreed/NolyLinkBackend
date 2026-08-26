@@ -20,6 +20,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from app.db.encrypted_types import EncryptedString
+
 
 class Base(DeclarativeBase):
     """Shared declarative base; Alembic's env.py targets Base.metadata for autogenerate."""
@@ -28,8 +30,8 @@ class Base(DeclarativeBase):
 
 
 class Branch(Base):
-    """A KRA-registered (tin, bhfId) device. cmc_key is encrypted at rest — the TypeDecorator
-    that transparently encrypts/decrypts it lands in Phase 4 alongside device initialization.
+    """A KRA-registered (tin, bhfId) device. cmc_key is encrypted at rest via EncryptedString
+    (spec §12.2) — reads/writes see the plaintext key; only the DB column holds ciphertext.
     """
 
     __tablename__ = "branches"
@@ -39,7 +41,7 @@ class Branch(Base):
     branch_code: Mapped[str] = mapped_column(String, unique=True, index=True)
     tin: Mapped[str] = mapped_column(CHAR(11))
     bhf_id: Mapped[str] = mapped_column(CHAR(2))
-    cmc_key: Mapped[str] = mapped_column(String)
+    cmc_key: Mapped[str] = mapped_column(EncryptedString)
     dvc_id: Mapped[str | None] = mapped_column(String)
     sdc_id: Mapped[str | None] = mapped_column(String)
     mrc_no: Mapped[str | None] = mapped_column(String)

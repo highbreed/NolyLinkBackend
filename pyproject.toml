@@ -52,6 +52,11 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends()/Query()/etc. in argument defaults is the framework's own idiom, not a
+# mutable-default bug.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Body"]
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]
