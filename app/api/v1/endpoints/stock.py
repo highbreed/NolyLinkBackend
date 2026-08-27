@@ -11,11 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import StockIOSubmission, StockMoveCache
+from app.db.models import Client, StockIOSubmission, StockMoveCache
 from app.db.session import get_db
 from app.schemas.client.stock_in import ClientStockIOIn, ClientStockMasterIn
-from app.services import cmc_key_manager, stock_service
+from app.services import stock_service
+from app.services.client_auth import get_authorized_branch
 from app.services.mapping.generic_mapper import CodeLookupError
+from app.services.rate_limit import enforce_rate_limit
 
 router = APIRouter()
 
@@ -29,12 +31,10 @@ class StockMoveOut(BaseModel):
 @router.get("/movements", response_model=list[StockMoveOut])
 async def list_stock_movements(
     branch_code: str,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> list[StockMoveOut]:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, branch_code)
 
     rows: list[StockMoveCache] = await stock_service.get_stock_moves(db, branch.id)
     return [
@@ -52,12 +52,10 @@ class StockIOOut(BaseModel):
 @router.post("/movements", response_model=StockIOOut, status_code=202)
 async def submit_stock_movement(
     payload: ClientStockIOIn,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> StockIOOut:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, payload.branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, payload.branch_code)
 
     try:
         submission: StockIOSubmission = await stock_service.submit_stock_io(db, branch, payload)
@@ -75,12 +73,10 @@ async def submit_stock_movement(
 @router.post("/master", status_code=202)
 async def submit_stock_master(
     payload: ClientStockMasterIn,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, payload.branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, payload.branch_code)
 
     try:
         await stock_service.submit_stock_master(db, branch, payload)

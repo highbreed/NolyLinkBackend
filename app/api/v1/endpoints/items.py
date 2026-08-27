@@ -9,12 +9,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Branch, Item
+from app.db.models import Branch, Client, Item
 from app.db.session import get_db
 from app.schemas.client.item_in import ClientItemIn
-from app.services import cmc_key_manager
+from app.services.client_auth import get_authorized_branch
 from app.services.kra_adapter import KraAdapter, KraError
 from app.services.mapping.generic_mapper import CodeLookupError, map_client_item_to_kra
+from app.services.rate_limit import enforce_rate_limit
 
 router = APIRouter()
 
@@ -46,12 +47,10 @@ def _to_item_out(item: Item, branch_code: str) -> ItemOut:
 @router.post("", response_model=ItemOut, status_code=201)
 async def create_item(
     payload: ClientItemIn,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> ItemOut:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, payload.branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, payload.branch_code)
 
     existing = await db.scalar(
         select(Item).where(Item.branch_id == branch.id, Item.sku == payload.sku)
@@ -112,11 +111,17 @@ async def create_item(
 @router.get("", response_model=list[ItemOut])
 async def list_items(
     branch_code: str | None = None,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> list[ItemOut]:
     stmt = select(Item, Branch).join(Branch, Item.branch_id == Branch.id)
     if branch_code is not None:
+        await get_authorized_branch(db, client, branch_code)
         stmt = stmt.where(Branch.branch_code == branch_code)
+    else:
+        # No branch filter given — scope to what this client is allowed to see rather than
+        # every branch in the gateway (spec §15 branch allow-listing).
+        stmt = stmt.where(Branch.id.in_(client.allowed_branch_ids))
 
     result = await db.execute(stmt)
     return [_to_item_out(item, branch.branch_code) for item, branch in result.all()]
@@ -135,12 +140,10 @@ class ItemCompositionIn(BaseModel):
 async def save_item_composition(
     sku: str,
     payload: ItemCompositionIn,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, payload.branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, payload.branch_code)
 
     item = await db.scalar(select(Item).where(Item.branch_id == branch.id, Item.sku == sku))
     if item is None:

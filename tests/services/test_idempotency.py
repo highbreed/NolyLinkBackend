@@ -8,7 +8,7 @@ from app.services import idempotency
 
 @pytest.fixture
 async def client_id(db_session):
-    client = Client(name="TEST-CLIENT", api_key_hash="irrelevant", allowed_branch_ids=[])
+    client = Client(name="TEST-CLIENT", client_secret_hash="irrelevant", allowed_branch_ids=[])
     db_session.add(client)
     await db_session.flush()
     return client.id

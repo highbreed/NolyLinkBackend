@@ -1,37 +1,66 @@
-"""Minimal, provisional client identification via a shared-secret API key.
+"""Client authentication (spec §15): OAuth2 client-credentials JWT verification, plus
+per-client branch allow-listing.
 
-Spec §13's idempotency_keys table is keyed by (client_id, external_ref, endpoint) — dedup
-without knowing "which client" isn't meaningful. Phase 9 owns the real inbound auth system
-(OAuth2 client-credentials, rate limiting, branch allow-listing per spec §15); this is just
-enough of a client-lookup primitive to make idempotency correct ahead of that, the same way
-Phase 4's admin gate stood in for Phase 9's auth on the device-init endpoint.
-
-API keys are hashed with sha256, not bcrypt/passlib (already a project dependency) — bcrypt is
-for low-entropy user passwords where slow, salted hashing resists brute force; a generated API
-key is already high-entropy, and sha256 allows an O(1) lookup by hash instead of checking every
-row. There's no client-provisioning endpoint yet, so clients.api_key_hash is populated by
-inserting a row directly for now.
+client_secret is hashed with sha256, not bcrypt/passlib (already a project dependency) —
+bcrypt is for low-entropy user passwords where slow, salted hashing resists brute force; an
+OAuth2 client_secret is already a generated high-entropy value, and sha256 allows an O(1)
+lookup by hash instead of checking every row (same reasoning as Phase 7's original API-key
+lookup, which this replaces).
 """
 
 import hashlib
+import uuid
 
-from fastapi import Depends, Header, HTTPException
-from sqlalchemy import select
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Client
+from app.core.config import get_settings
+from app.db.models import Branch, Client
 from app.db.session import get_db
+from app.services import cmc_key_manager
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/oauth/token")
 
 
-def hash_api_key(raw_key: str) -> str:
-    return hashlib.sha256(raw_key.encode()).hexdigest()
+def hash_client_secret(raw_secret: str) -> str:
+    return hashlib.sha256(raw_secret.encode()).hexdigest()
 
 
 async def get_current_client(
-    x_api_key: str = Header(...),
+    token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> Client:
-    client = await db.scalar(select(Client).where(Client.api_key_hash == hash_api_key(x_api_key)))
+    settings = get_settings()
+    try:
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        client_id = uuid.UUID(payload["sub"])
+    except (JWTError, KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        ) from exc
+
+    client = await db.get(Client, client_id)
     if client is None:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        )
     return client
+
+
+async def get_authorized_branch(db: AsyncSession, client: Client, branch_code: str) -> Branch:
+    """Resolves branch_code and enforces spec §15's per-client branch allow-listing — a
+    client with a valid token can still only act on branches its allowed_branch_ids lists.
+    """
+    try:
+        branch = await cmc_key_manager.get_branch_credentials(db, branch_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if branch.id not in client.allowed_branch_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Client {client.name!r} is not allowed to access branch {branch_code!r}",
+        )
+    return branch

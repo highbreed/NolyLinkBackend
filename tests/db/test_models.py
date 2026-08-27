@@ -40,7 +40,7 @@ async def test_client_round_trip(db_session):
     branch_id = uuid.uuid4()
     client = Client(
         name="SAP-PROD",
-        api_key_hash="hashed-key",
+        client_secret_hash="hashed-key",
         allowed_branch_ids=[branch_id],
     )
     db_session.add(client)
@@ -101,7 +101,7 @@ async def test_kra_sync_state_round_trip(db_session):
 
 
 async def test_idempotency_key_round_trip(db_session):
-    client = Client(name="POS-VENDOR-X", api_key_hash="hash", allowed_branch_ids=[])
+    client = Client(name="POS-VENDOR-X", client_secret_hash="hash", allowed_branch_ids=[])
     db_session.add(client)
     await db_session.flush()
 

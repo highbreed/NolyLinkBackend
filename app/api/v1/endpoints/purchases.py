@@ -10,10 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Purchase, PurchaseSalesCache
+from app.db.models import Client, Purchase, PurchaseSalesCache
 from app.db.session import get_db
 from app.schemas.client.purchase_in import ClientPurchaseIn
-from app.services import cmc_key_manager, purchase_service
+from app.services import purchase_service
+from app.services.client_auth import get_authorized_branch
+from app.services.rate_limit import enforce_rate_limit
 
 router = APIRouter()
 
@@ -39,12 +41,10 @@ def _pending_to_out(row: PurchaseSalesCache, branch_code: str) -> PendingPurchas
 @router.get("/pending", response_model=list[PendingPurchaseOut])
 async def list_pending_purchases(
     branch_code: str,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> list[PendingPurchaseOut]:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, branch_code)
 
     rows = await purchase_service.get_pending_purchases(db, branch.id)
     return [_pending_to_out(row, branch.branch_code) for row in rows]
@@ -59,12 +59,10 @@ class PurchaseOut(BaseModel):
 @router.post("", response_model=PurchaseOut, status_code=202)
 async def submit_purchase(
     payload: ClientPurchaseIn,
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> PurchaseOut:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, payload.branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, payload.branch_code)
 
     try:
         purchase: Purchase = await purchase_service.submit_purchase(db, branch, payload)

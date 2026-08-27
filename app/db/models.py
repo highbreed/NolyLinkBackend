@@ -52,13 +52,17 @@ class Branch(Base):
 
 
 class Client(Base):
-    """An inbound integration client (SAP-PROD, POS-VENDOR-X, ...) — spec §15."""
+    """An inbound integration client (SAP-PROD, POS-VENDOR-X, ...) — spec §15.
+
+    id doubles as the OAuth2 client_id sent to POST /oauth/token (spec §15's
+    client-credentials grant); client_secret_hash is that flow's client_secret, hashed.
+    """
 
     __tablename__ = "clients"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String)
-    api_key_hash: Mapped[str] = mapped_column(String)
+    client_secret_hash: Mapped[str] = mapped_column(String)
     allowed_branch_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

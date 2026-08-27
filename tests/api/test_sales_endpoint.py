@@ -14,7 +14,8 @@ from app.core.config import get_settings
 from app.db.models import Branch, Client, IdempotencyKey, Item, KraCodeList
 from app.db.session import get_db
 from app.main import app
-from app.services.client_auth import hash_api_key
+from app.services.client_auth import hash_client_secret
+from tests.auth_helpers import bearer_header
 
 
 @pytest.fixture
@@ -53,12 +54,20 @@ async def branch(db_session) -> Branch:
 
 
 @pytest.fixture
-async def registered_client(db_session) -> tuple[Client, str]:
-    raw_key = "test-api-key-12345"
-    client = Client(name="SAP-TEST", api_key_hash=hash_api_key(raw_key), allowed_branch_ids=[])
+async def registered_client(db_session, branch) -> Client:
+    client = Client(
+        name="SAP-TEST",
+        client_secret_hash=hash_client_secret("irrelevant"),
+        allowed_branch_ids=[branch.id],
+    )
     db_session.add(client)
     await db_session.flush()
-    return client, raw_key
+    return client
+
+
+@pytest.fixture
+def auth_headers(registered_client: Client) -> dict[str, str]:
+    return bearer_header(registered_client)
 
 
 INVOICE_PAYLOAD = {
@@ -96,17 +105,14 @@ def sales_envelope(cur_rcpt_no=1):
     }
 
 
-async def test_submit_sales_invoice_returns_receipt(api_client, branch, registered_client):
-    client, raw_key = registered_client
+async def test_submit_sales_invoice_returns_receipt(api_client, branch, auth_headers):
     kra_base_url = get_settings().kra_base_url
 
     with respx.mock(base_url=kra_base_url) as mock:
         mock.post("/saveTrnsSalesOsdc").mock(return_value=Response(200, json=sales_envelope()))
         async with api_client as c:
             response = await c.post(
-                "/v1/sales-invoices",
-                json=INVOICE_PAYLOAD,
-                headers={"X-Api-Key": raw_key},
+                "/v1/sales-invoices", json=INVOICE_PAYLOAD, headers=auth_headers
             )
 
     assert response.status_code == 201
@@ -117,9 +123,8 @@ async def test_submit_sales_invoice_returns_receipt(api_client, branch, register
 
 
 async def test_resubmitting_same_external_ref_does_not_call_kra_again(
-    api_client, branch, registered_client
+    api_client, branch, auth_headers
 ):
-    client, raw_key = registered_client
     kra_base_url = get_settings().kra_base_url
 
     with respx.mock(base_url=kra_base_url) as mock:
@@ -127,63 +132,56 @@ async def test_resubmitting_same_external_ref_does_not_call_kra_again(
             return_value=Response(200, json=sales_envelope())
         )
         async with api_client as c:
-            first = await c.post(
-                "/v1/sales-invoices", json=INVOICE_PAYLOAD, headers={"X-Api-Key": raw_key}
-            )
-            second = await c.post(
-                "/v1/sales-invoices", json=INVOICE_PAYLOAD, headers={"X-Api-Key": raw_key}
-            )
+            first = await c.post("/v1/sales-invoices", json=INVOICE_PAYLOAD, headers=auth_headers)
+            second = await c.post("/v1/sales-invoices", json=INVOICE_PAYLOAD, headers=auth_headers)
 
     assert route.call_count == 1
     assert first.json() == second.json()
     assert second.status_code == 201
 
 
-async def test_get_sales_invoice_after_submission(api_client, branch, registered_client):
-    client, raw_key = registered_client
+async def test_get_sales_invoice_after_submission(api_client, branch, auth_headers):
     kra_base_url = get_settings().kra_base_url
 
     with respx.mock(base_url=kra_base_url) as mock:
         mock.post("/saveTrnsSalesOsdc").mock(return_value=Response(200, json=sales_envelope()))
         async with api_client as c:
-            await c.post("/v1/sales-invoices", json=INVOICE_PAYLOAD, headers={"X-Api-Key": raw_key})
+            await c.post("/v1/sales-invoices", json=INVOICE_PAYLOAD, headers=auth_headers)
             response = await c.get(
                 "/v1/sales-invoices/SAP-BILLDOC-001",
                 params={"branch_code": "NAIROBI-HQ"},
-                headers={"X-Api-Key": raw_key},
+                headers=auth_headers,
             )
 
     assert response.status_code == 200
     assert response.json()["kra_rcpt_sign"] == "2" * 16
 
 
-async def test_get_unknown_external_ref_is_404(api_client, branch, registered_client):
-    client, raw_key = registered_client
+async def test_get_unknown_external_ref_is_404(api_client, branch, auth_headers):
     async with api_client as c:
         response = await c.get(
             "/v1/sales-invoices/NOPE",
             params={"branch_code": "NAIROBI-HQ"},
-            headers={"X-Api-Key": raw_key},
+            headers=auth_headers,
         )
     assert response.status_code == 404
 
 
-async def test_missing_api_key_is_unauthorized(api_client, branch):
+async def test_missing_token_is_unauthorized(api_client, branch):
     async with api_client as c:
         response = await c.post("/v1/sales-invoices", json=INVOICE_PAYLOAD)
-    assert response.status_code in (401, 422)
+    assert response.status_code == 401
 
 
 async def test_unregistered_sku_is_422_and_releases_idempotency_claim(
-    api_client, branch, registered_client, db_session
+    api_client, branch, auth_headers, db_session
 ):
-    client, raw_key = registered_client
     payload = json.loads(json.dumps(INVOICE_PAYLOAD))
     payload["lines"][0]["sku"] = "NOT-REGISTERED"
     payload["external_invoice_ref"] = "SAP-BILLDOC-BAD"
 
     async with api_client as c:
-        response = await c.post("/v1/sales-invoices", json=payload, headers={"X-Api-Key": raw_key})
+        response = await c.post("/v1/sales-invoices", json=payload, headers=auth_headers)
     assert response.status_code == 422
 
     # The claim row should have been released, not left stuck forever.

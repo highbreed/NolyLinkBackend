@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # schedule itself (30s/2m/10m/1h) — this just bounds how promptly a due retry is noticed.
     kra_outbox_dispatch_interval_seconds: int = 30
 
+    # Per-client rate limit (spec §15), a fixed-window counter in Redis. Not specified by the
+    # spec — a config flag rather than a hardcoded guess.
+    client_rate_limit_per_minute: int = 120
+
     @property
     def kra_base_url(self) -> str:
         return self.kra_base_url_sbx if self.kra_env == "sandbox" else self.kra_base_url_prod

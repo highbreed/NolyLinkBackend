@@ -12,20 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Branch
+from app.db.models import Client
 from app.db.session import get_db
 from app.schemas.kra.branch import BhfCustSaveReq, BhfInsuranceSaveReq, BhfUserSaveReq
-from app.services import cmc_key_manager
+from app.services.client_auth import get_authorized_branch
 from app.services.kra_adapter import KraAdapter, KraError
+from app.services.rate_limit import enforce_rate_limit
 
 router = APIRouter()
-
-
-async def _get_branch_or_404(db: AsyncSession, branch_code: str) -> Branch:
-    try:
-        return await cmc_key_manager.get_branch_credentials(db, branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 class BranchCustomerIn(BaseModel):
@@ -42,9 +36,11 @@ class BranchCustomerIn(BaseModel):
 
 @router.post("/customers", status_code=201)
 async def save_branch_customer(
-    payload: BranchCustomerIn, db: AsyncSession = Depends(get_db)
+    payload: BranchCustomerIn,
+    client: Client = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    branch = await _get_branch_or_404(db, payload.branch_code)
+    branch = await get_authorized_branch(db, client, payload.branch_code)
     req = BhfCustSaveReq(
         tin=branch.tin,
         bhfId=branch.bhf_id,
@@ -81,9 +77,11 @@ class BranchUserIn(BaseModel):
 
 @router.post("/users", status_code=201)
 async def save_branch_user(
-    payload: BranchUserIn, db: AsyncSession = Depends(get_db)
+    payload: BranchUserIn,
+    client: Client = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    branch = await _get_branch_or_404(db, payload.branch_code)
+    branch = await get_authorized_branch(db, client, payload.branch_code)
     req = BhfUserSaveReq(
         tin=branch.tin,
         bhfId=branch.bhf_id,
@@ -115,9 +113,11 @@ class BranchInsuranceIn(BaseModel):
 
 @router.post("/insurance", status_code=201)
 async def save_branch_insurance(
-    payload: BranchInsuranceIn, db: AsyncSession = Depends(get_db)
+    payload: BranchInsuranceIn,
+    client: Client = Depends(enforce_rate_limit),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    branch = await _get_branch_or_404(db, payload.branch_code)
+    branch = await get_authorized_branch(db, client, payload.branch_code)
     req = BhfInsuranceSaveReq(
         tin=branch.tin,
         bhfId=branch.bhf_id,

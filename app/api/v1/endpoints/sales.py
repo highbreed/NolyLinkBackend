@@ -13,10 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Client, SalesInvoice
 from app.db.session import get_db
 from app.schemas.client.sales_in import ClientSalesInvoice
-from app.services import cmc_key_manager, idempotency
-from app.services.client_auth import get_current_client
+from app.services import idempotency
+from app.services.client_auth import get_authorized_branch
 from app.services.kra_adapter import KraAdapter, KraError
 from app.services.mapping.generic_mapper import CodeLookupError, map_client_sales_invoice_to_kra
+from app.services.rate_limit import enforce_rate_limit
 
 router = APIRouter()
 
@@ -50,13 +51,10 @@ def _to_out(invoice: SalesInvoice, branch_code: str) -> SalesInvoiceOut:
 @router.post("", response_model=SalesInvoiceOut, status_code=201)
 async def submit_sales_invoice(
     payload: ClientSalesInvoice,
-    client: Client = Depends(get_current_client),
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> SalesInvoiceOut:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, payload.branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, payload.branch_code)
 
     try:
         cached = await idempotency.claim_or_get_cached(
@@ -152,13 +150,10 @@ async def submit_sales_invoice(
 async def get_sales_invoice(
     external_ref: str,
     branch_code: str,
-    client: Client = Depends(get_current_client),
+    client: Client = Depends(enforce_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> SalesInvoiceOut:
-    try:
-        branch = await cmc_key_manager.get_branch_credentials(db, branch_code)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    branch = await get_authorized_branch(db, client, branch_code)
 
     invoice = await db.scalar(
         select(SalesInvoice).where(

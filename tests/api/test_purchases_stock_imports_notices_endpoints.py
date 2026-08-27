@@ -13,11 +13,13 @@ from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.db.models import Branch, Item, Outbox, PurchaseSalesCache
+from app.db.models import Branch, Client, Item, Outbox, PurchaseSalesCache
 from app.db.session import get_db
 from app.main import app
 from app.services import import_item_service, notice_service, stock_service
+from app.services.client_auth import hash_client_secret
 from app.services.kra_adapter import KraAdapter
+from tests.auth_helpers import bearer_header
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "kra_samples"
 
@@ -60,11 +62,26 @@ async def branch(db_session) -> Branch:
     return b
 
 
-async def test_stock_master_returns_202_and_enqueues_outbox_row(client, branch, db_session):
+@pytest.fixture
+async def auth_headers(db_session, branch) -> dict[str, str]:
+    registered_client = Client(
+        name="SAP-TEST",
+        client_secret_hash=hash_client_secret("irrelevant"),
+        allowed_branch_ids=[branch.id],
+    )
+    db_session.add(registered_client)
+    await db_session.flush()
+    return bearer_header(registered_client)
+
+
+async def test_stock_master_returns_202_and_enqueues_outbox_row(
+    client, branch, db_session, auth_headers
+):
     async with client as c:
         response = await c.post(
             "/v1/stock/master",
             json={"branch_code": "NAIROBI-HQ", "sku": "BREAD", "remaining_quantity": "48"},
+            headers=auth_headers,
         )
     assert response.status_code == 202
 
@@ -77,7 +94,7 @@ async def test_stock_master_returns_202_and_enqueues_outbox_row(client, branch, 
     assert rows[0].payload["itemCd"] == "KE2NTBA0000001"
 
 
-async def test_stock_movements_post_and_get(client, branch, db_session):
+async def test_stock_movements_post_and_get(client, branch, db_session, auth_headers):
     kra_base_url = get_settings().kra_base_url
     res_body = {
         "resultCd": "000",
@@ -101,16 +118,19 @@ async def test_stock_movements_post_and_get(client, branch, db_session):
                 "sar_ty_cd": "02",
                 "lines": [{"sku": "BREAD", "quantity": "2", "unit_price": "100.00"}],
             },
+            headers=auth_headers,
         )
         assert post_response.status_code == 202
         assert post_response.json()["status"] == "PENDING"
 
-        get_response = await c.get("/v1/stock/movements", params={"branch_code": "NAIROBI-HQ"})
+        get_response = await c.get(
+            "/v1/stock/movements", params={"branch_code": "NAIROBI-HQ"}, headers=auth_headers
+        )
     assert get_response.status_code == 200
     assert len(get_response.json()) == 1
 
 
-async def test_purchases_pending_and_submit(client, branch, db_session):
+async def test_purchases_pending_and_submit(client, branch, db_session, auth_headers):
     db_session.add(
         PurchaseSalesCache(
             branch_id=branch.id,
@@ -124,7 +144,9 @@ async def test_purchases_pending_and_submit(client, branch, db_session):
 
     async with client as c:
         pending_response = await c.get(
-            "/v1/purchases/pending", params={"branch_code": "NAIROBI-HQ"}
+            "/v1/purchases/pending",
+            params={"branch_code": "NAIROBI-HQ"},
+            headers=auth_headers,
         )
         assert len(pending_response.json()) == 1
 
@@ -137,6 +159,7 @@ async def test_purchases_pending_and_submit(client, branch, db_session):
                 "spplr_invc_no": "SUP-INV-0001",
                 "pchs_ty_cd": "N",
             },
+            headers=auth_headers,
         )
     assert submit_response.status_code == 202
     assert submit_response.json()["status"] == "PENDING"
@@ -149,7 +172,7 @@ async def test_purchases_pending_and_submit(client, branch, db_session):
     assert len(outbox_rows) == 1
 
 
-async def test_imports_list_and_decision(client, branch, db_session):
+async def test_imports_list_and_decision(client, branch, db_session, auth_headers):
     kra_base_url = get_settings().kra_base_url
     with respx.mock(base_url=kra_base_url) as mock:
         mock.post("/selectImportItemList").mock(
@@ -161,7 +184,9 @@ async def test_imports_list_and_decision(client, branch, db_session):
         await db_session.commit()
 
     async with client as c:
-        list_response = await c.get("/v1/imports", params={"branch_code": "NAIROBI-HQ"})
+        list_response = await c.get(
+            "/v1/imports", params={"branch_code": "NAIROBI-HQ"}, headers=auth_headers
+        )
         assert len(list_response.json()) == 1
 
         decision_response = await c.post(
@@ -172,6 +197,7 @@ async def test_imports_list_and_decision(client, branch, db_session):
                 "item_cd": "KE1BGKG0000005",
                 "decision_cd": "3",
             },
+            headers=auth_headers,
         )
     assert decision_response.status_code == 202
 
@@ -184,7 +210,7 @@ async def test_imports_list_and_decision(client, branch, db_session):
     assert outbox_rows[0].payload["imptItemsttsCd"] == "3"
 
 
-async def test_notices_list(client, branch, db_session):
+async def test_notices_list(client, branch, db_session, auth_headers):
     kra_base_url = get_settings().kra_base_url
     with respx.mock(base_url=kra_base_url) as mock:
         mock.post("/selectNoticeList").mock(
@@ -196,6 +222,8 @@ async def test_notices_list(client, branch, db_session):
         await db_session.commit()
 
     async with client as c:
-        response = await c.get("/v1/notices", params={"branch_code": "NAIROBI-HQ"})
+        response = await c.get(
+            "/v1/notices", params={"branch_code": "NAIROBI-HQ"}, headers=auth_headers
+        )
     assert response.status_code == 200
     assert response.json()[0]["title"] == "System maintenance"
