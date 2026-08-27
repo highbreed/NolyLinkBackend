@@ -32,6 +32,12 @@ class Base(DeclarativeBase):
 class Branch(Base):
     """A KRA-registered (tin, bhfId) device. cmc_key is encrypted at rest via EncryptedString
     (spec §12.2) — reads/writes see the plaintext key; only the DB column holds ciphertext.
+
+    device_type/kra_base_url_override let one gateway instance serve OSCU and VSCU devices
+    side by side — same request/response contract either way, only the host differs.
+    kra_base_url_override is null for the common case (falls back to the global
+    Settings.kra_base_url for that branch's device_type); set per-branch at init time when a
+    branch needs to hit a non-default host.
     """
 
     __tablename__ = "branches"
@@ -45,6 +51,8 @@ class Branch(Base):
     dvc_id: Mapped[str | None] = mapped_column(String)
     sdc_id: Mapped[str | None] = mapped_column(String)
     mrc_no: Mapped[str | None] = mapped_column(String)
+    device_type: Mapped[str] = mapped_column(String, default="OSCU", server_default="OSCU")
+    kra_base_url_override: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="ACTIVE", server_default="ACTIVE")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

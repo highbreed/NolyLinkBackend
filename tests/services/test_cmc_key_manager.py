@@ -129,6 +129,66 @@ async def test_other_auth_errors_propagate(db_session, kra):
             )
 
 
+async def test_initialize_device_with_explicit_override_persists_it_and_calls_that_host(
+    db_session, kra
+):
+    """An admin pinning a specific branch to a specific host (e.g. a VSCU tenant on its own
+    endpoint) must both call that host for the bootstrap request and persist the override, so
+    every later call for this branch (Phases 5-8) keeps using it via KraAdapter._resolve_base_url.
+    """
+    override_url = "https://vscu-tenant-y.example/etims-api"
+    res_body = load_fixture("device_verification_res")
+
+    with respx.mock() as mock:
+        mock.post(f"{override_url}/selectInitOsdcInfo").mock(
+            return_value=Response(200, json=res_body)
+        )
+        branch = await cmc_key_manager.initialize_device(
+            db_session,
+            kra,
+            "VSCU-TENANT-Y",
+            "A666666666Z",
+            "00",
+            device_type="VSCU",
+            kra_base_url_override=override_url,
+        )
+
+    assert branch.device_type == "VSCU"
+    assert branch.kra_base_url_override == override_url
+
+
+async def test_initialize_device_vscu_uses_configured_global_default(db_session):
+    """device_type=VSCU with no per-branch override falls back to the global
+    kra_base_url_vscu_sbx setting — and does NOT persist a resolved URL onto the branch, so a
+    later change to that global setting is still picked up (see kra_adapter._resolve_base_url).
+    """
+    vscu_url = "https://vscu.kra-sandbox.test/etims-api"
+    vscu_settings = Settings(
+        kra_env="sandbox", kra_base_url_sbx=f"{BASE_URL}/", kra_base_url_vscu_sbx=vscu_url
+    )
+    vscu_kra = KraAdapter(db=db_session, settings=vscu_settings)
+    res_body = load_fixture("device_verification_res")
+
+    with respx.mock() as mock:
+        mock.post(f"{vscu_url}/selectInitOsdcInfo").mock(return_value=Response(200, json=res_body))
+        branch = await cmc_key_manager.initialize_device(
+            db_session, vscu_kra, "VSCU-STD", "A777777777Z", "00", device_type="VSCU"
+        )
+
+    assert branch.device_type == "VSCU"
+    assert branch.kra_base_url_override is None
+
+
+async def test_initialize_device_vscu_without_configured_url_raises(db_session, kra):
+    """adapter_settings (the default test fixture) never sets kra_base_url_vscu_sbx — this
+    must fail loudly rather than silently POSTing to an empty host.
+    """
+    with pytest.raises(ValueError, match="kra_base_url_vscu_sandbox"):
+        await cmc_key_manager.initialize_device(
+            db_session, kra, "VSCU-UNCONFIGURED", "A888888888Z", "00", device_type="VSCU"
+        )
+
+
 async def test_get_branch_credentials_round_trips_cmc_key(db_session):
     branch = Branch(branch_code="ELDORET-01", tin="A222222222Z", bhf_id="00", cmc_key="k" * 255)
     db_session.add(branch)

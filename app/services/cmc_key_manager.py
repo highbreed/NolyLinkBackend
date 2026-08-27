@@ -34,17 +34,34 @@ def generate_dvc_srl_no(tin: str, bhf_id: str, settings: Settings | None = None)
 
 
 async def initialize_device(
-    db: AsyncSession, kra: KraAdapter, branch_code: str, tin: str, bhf_id: str
+    db: AsyncSession,
+    kra: KraAdapter,
+    branch_code: str,
+    tin: str,
+    bhf_id: str,
+    device_type: str = "OSCU",
+    kra_base_url_override: str | None = None,
 ) -> Branch:
     """POST /v1/devices/initialize's core logic. Persists cmcKey/dvcId/sdcId/mrcNo into
     `branches`, encrypted at rest, keyed by (tin, bhfId) with branch_code as the only
     identifier client systems and other services ever reference (spec §12.3).
+
+    device_type/kra_base_url_override are stored on the branch so every later call for it
+    (Phases 5-8) automatically targets the right host — OSCU and VSCU share this exact
+    request/response contract, so nothing else about the flow changes.
     """
     dvc_srl_no = generate_dvc_srl_no(tin, bhf_id)
     req = DeviceVerificationReq(tin=tin, bhfId=bhf_id, dvcSrlNo=dvc_srl_no)
 
     try:
-        res = await kra.initialize_device(req)
+        # kra itself resolves the host (explicit override, else device_type's global default,
+        # via kra._settings — never the module-level get_settings(), so a KraAdapter built
+        # with injected test settings never leaks into real config). Only the explicit
+        # override, if any, is persisted below — a device_type-only branch keeps following
+        # the global VSCU setting if that's changed later, rather than freezing at init time.
+        res = await kra.initialize_device(
+            req, base_url_override=kra_base_url_override, device_type=device_type
+        )
     except KraAuthError as exc:
         if exc.result_cd != "902":
             raise
@@ -72,6 +89,8 @@ async def initialize_device(
         dvc_id=res.data.device.dvcId,
         sdc_id=res.data.device.sdcId,
         mrc_no=res.data.device.mrcNo,
+        device_type=device_type,
+        kra_base_url_override=kra_base_url_override,
     )
     db.add(branch)
     await db.flush()

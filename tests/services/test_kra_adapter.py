@@ -11,7 +11,7 @@ from httpx import Response
 from sqlalchemy import select
 
 from app.core.config import Settings
-from app.db.models import KraCallLog
+from app.db.models import Branch, KraCallLog
 from app.schemas.kra.codes import CodeSearchReq
 from app.services.kra_adapter import (
     KraAdapter,
@@ -137,3 +137,56 @@ async def test_every_call_is_logged_success_and_failure(adapter: KraAdapter, db_
         # the request carries a 255-char cmcKey; the log must never store it in plaintext
         assert "c" * 255 not in row.request_hash
         assert len(row.request_hash) == 64  # sha256 hex digest
+
+
+async def test_branch_id_without_override_resolves_to_settings_default(
+    adapter: KraAdapter, db_session
+):
+    """A branch with no kra_base_url_override (the common OSCU case) must still route through
+    the DB-lookup path added for per-branch routing, landing on the same host as before.
+    """
+    branch = Branch(branch_code="OSCU-STD", tin="A444444444Z", bhf_id="00", cmc_key="irrelevant")
+    db_session.add(branch)
+    await db_session.flush()
+
+    req = CodeSearchReq.model_validate(load_fixture("code_search_req"))
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.post("/selectCodeList").mock(
+            return_value=Response(200, json=load_fixture("code_search_res"))
+        )
+        result = await adapter.get_code_list(req, branch_id=branch.id)
+
+    assert result.resultCd == "000"
+
+
+async def test_branch_kra_base_url_override_routes_call_to_that_host(
+    adapter: KraAdapter, db_session
+):
+    """A shared KraAdapter instance (the exact pattern outbox_dispatcher.py uses to dispatch
+    rows for many branches through one adapter) must route each call to that branch's own
+    kra_base_url_override host, not the adapter's default. This is the multi-tenant OSCU/VSCU
+    scenario — different clients on different KRA hosts, same shared dispatcher.
+    """
+    override_url = "https://vscu-tenant-x.example/etims-api"
+    branch = Branch(
+        branch_code="VSCU-TENANT-X",
+        tin="A555555555Z",
+        bhf_id="00",
+        cmc_key="irrelevant",
+        device_type="VSCU",
+        kra_base_url_override=override_url,
+    )
+    db_session.add(branch)
+    await db_session.flush()
+
+    req = CodeSearchReq.model_validate(load_fixture("code_search_req"))
+    res_body = load_fixture("code_search_res")
+
+    with respx.mock() as mock:
+        route = mock.post(f"{override_url}/selectCodeList").mock(
+            return_value=Response(200, json=res_body)
+        )
+        result = await adapter.get_code_list(req, branch_id=branch.id)
+
+    assert route.call_count == 1
+    assert result.resultCd == "000"

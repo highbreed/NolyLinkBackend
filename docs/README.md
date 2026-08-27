@@ -105,6 +105,17 @@ never includes `cmcKey` itself (see the automated check for this in
 `tests/api/test_device_endpoint.py`); every other endpoint references the branch by
 `branch_code` from then on, never `tin`/`bhfId`/`cmcKey` directly.
 
+**OSCU vs VSCU / multi-tenant hosts.** VSCU devices use this exact same request/response
+contract — only the host differs. Add `"device_type": "VSCU"` to the request above and it
+resolves to `KRA_BASE_URL_VSCU_SBX`/`_PROD` for every call this branch ever makes (fails with
+422 if that's not configured yet). If a specific branch/tenant needs a host that isn't either
+global default — e.g. a customer's own dedicated KRA gateway — pin it directly with
+`"kra_base_url_override": "https://..."` instead; that branch always uses exactly that host
+from then on, regardless of `device_type` or later changes to the global settings. Every
+branch is independent, so different clients (different `Client` rows, each scoped to their
+own branches via `allowed_branch_ids`) can freely mix OSCU, VSCU, and custom-host branches on
+one running gateway.
+
 If KRA returns `902` (already installed) and a local record already exists for that
 `(tin, bhfId)`, the call is treated as idempotent and returns the existing record. If `902`
 comes back with **no** local record, the gateway refuses to guess — it raises rather than

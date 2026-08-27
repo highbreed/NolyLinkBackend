@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.metrics import kra_calls_total
-from app.db.models import KraCallLog
+from app.db.models import Branch, KraCallLog
 from app.schemas.kra.branch import (
     BhfCustSaveReq,
     BhfCustSaveRes,
@@ -177,17 +177,53 @@ class KraAdapter:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _resolve_base_url(
+        self,
+        branch_id: uuid.UUID | None,
+        base_url_override: str | None,
+        device_type: str | None,
+    ) -> str:
+        """OSCU and VSCU devices share this exact request/response contract (spec-confirmed) —
+        the only thing that differs per branch is which host to call. Precedence:
+        base_url_override (an explicit per-call/per-branch pin) > the branch's own
+        kra_base_url_override column (steady-state calls, resolved via branch_id) >
+        device_type's global default (only relevant for /selectInitOsdcInfo, called before any
+        Branch row exists) > the plain OSCU global default.
+
+        Always resolves through self._settings (never the module-level get_settings()), so a
+        KraAdapter constructed with injected test settings never leaks into a real config.
+        """
+        if base_url_override:
+            return base_url_override
+        if branch_id is not None:
+            branch = await self._db.get(Branch, branch_id)
+            if branch is not None:
+                if branch.kra_base_url_override:
+                    return branch.kra_base_url_override
+                return self._settings.kra_base_url_for(branch.device_type)
+        if device_type is not None:
+            return self._settings.kra_base_url_for(device_type)
+        return self._settings.kra_base_url
+
     async def _call(
         self,
         endpoint: str,
         payload: BaseModel,
         response_model: type[ResT],
         branch_id: uuid.UUID | None = None,
+        base_url_override: str | None = None,
+        device_type: str | None = None,
     ) -> ResT:
         body: dict[str, Any] = payload.model_dump(mode="json", exclude_none=True)
         request_hash = hashlib.sha256(json.dumps(body, sort_keys=True).encode("utf-8")).hexdigest()
 
-        http_response = await self._client.post(endpoint, json=body)
+        base_url = await self._resolve_base_url(branch_id, base_url_override, device_type)
+        # An absolute URL bypasses self._client's own configured base_url entirely (httpx only
+        # joins relative URLs against it) — this is what lets one adapter/client instance serve
+        # different branches pointed at different hosts (needed by outbox_dispatcher, which
+        # dispatches rows for many branches through one shared KraAdapter).
+        url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        http_response = await self._client.post(url, json=body)
         http_response.raise_for_status()
         response = response_model.model_validate(http_response.json())
 
@@ -213,10 +249,22 @@ class KraAdapter:
         return response
 
     async def initialize_device(
-        self, req: DeviceVerificationReq, branch_id: uuid.UUID | None = None
+        self,
+        req: DeviceVerificationReq,
+        branch_id: uuid.UUID | None = None,
+        base_url_override: str | None = None,
+        device_type: str = "OSCU",
     ) -> DeviceVerificationRes:
+        # The only KRA call ever made before a Branch row exists — device_type/
+        # base_url_override let the caller target OSCU vs VSCU (or a custom host) directly,
+        # since there's no branch to resolve it from yet.
         return await self._call(
-            "/selectInitOsdcInfo", req, DeviceVerificationRes, branch_id=branch_id
+            "/selectInitOsdcInfo",
+            req,
+            DeviceVerificationRes,
+            branch_id=branch_id,
+            base_url_override=base_url_override,
+            device_type=device_type,
         )
 
     async def get_code_list(

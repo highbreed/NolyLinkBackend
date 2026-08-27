@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     kra_env: Literal["sandbox", "production"] = "sandbox"
     kra_base_url_prod: str = "https://etims-api.kra.go.ke/etims-api/"
     kra_base_url_sbx: str = "https://etims-api-sbx.kra.go.ke/etims-api/"
+    # VSCU devices use this exact same request/response contract — only the host differs
+    # (Branch.device_type / kra_base_url_override, app/services/kra_adapter.py). Left blank by
+    # default rather than guessing a URL; must be set (env or per-branch override) before any
+    # VSCU branch is initialized.
+    kra_base_url_vscu_prod: str = ""
+    kra_base_url_vscu_sbx: str = ""
     kra_request_timeout_seconds: int = 30
     # Spec §5.1: the source document doesn't print an explicit URL for item-composition save,
     # so the path is a config flag rather than a hardcoded assumption (confirm before go-live).
@@ -77,6 +83,25 @@ class Settings(BaseSettings):
     @property
     def kra_base_url(self) -> str:
         return self.kra_base_url_sbx if self.kra_env == "sandbox" else self.kra_base_url_prod
+
+    def kra_base_url_for(self, device_type: str) -> str:
+        """Global default host for a device_type, before any per-branch override. Raises if
+        VSCU is requested but its URL was never configured, rather than silently calling an
+        empty host.
+        """
+        if device_type == "VSCU":
+            url = (
+                self.kra_base_url_vscu_sbx
+                if self.kra_env == "sandbox"
+                else self.kra_base_url_vscu_prod
+            )
+            if not url:
+                raise ValueError(
+                    f"device_type=VSCU but kra_base_url_vscu_{self.kra_env} is not configured "
+                    "— set it, or pass an explicit kra_base_url_override for this branch."
+                )
+            return url
+        return self.kra_base_url
 
 
 @lru_cache
