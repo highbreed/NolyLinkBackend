@@ -2,12 +2,22 @@
 
 FastAPI integration gateway between client ERP/POS systems (SAP, other ERPs, POS) and KRA's
 eTIMS OSCU API. See [`KRA_OSCU_FastAPI_Integration_Spec.md`](../KRA_OSCU_FastAPI_Integration_Spec.md)
-in the repo root for the full technical specification this project implements.
+in the repo root for the full technical specification this project implements, and
+[`docs/sap_integration_guide.md`](sap_integration_guide.md) for the client-facing DTO
+contract and sample payloads if you're the one integrating a source system against this
+gateway rather than building it.
 
 ## Status
 
-Under active build, phase by phase — see the spec's "BUILD PHASES" section for the roadmap.
-Currently: Phase 1 (core data model — SQLAlchemy models, Alembic migration, round-trip tests).
+All 11 build phases are implemented — device init, code-table caching, item/branch master
+data, sales invoices (sync), purchases/stock/imports/notices (async outbox), client
+authN/Z + rate limiting, and observability. See each phase's commit for what it added.
+
+**What's still genuinely open**, not just unfinished: no real KRA sandbox credentials have
+ever been provided to this build, so every sandbox-dependent claim in this document and in
+`KRA_OSCU_FastAPI_Integration_Spec.md` §20 is verified against a mocked KRA (`respx`), not
+the live API. See [`docs/open_questions_resolved.md`](open_questions_resolved.md) for the
+specific open items and what would close each one out.
 
 ## Running locally (Docker)
 
@@ -16,7 +26,7 @@ cp .env.example .env
 make dev      # docker-compose up --build: app + postgres + redis (+ celery worker)
 ```
 
-Then `curl localhost:8000/v1/health` should return `{"status": "ok"}`.
+Then `curl localhost:8000/v1/health` should return `{"status": "ok", "last_successful_poll": {}}`.
 
 ```bash
 make test       # run pytest inside the app container
@@ -26,6 +36,11 @@ make fmt          # black
 make typecheck    # mypy
 ```
 
+Note: this Docker path hasn't actually been run in the environment this gateway was built
+in (no working Docker socket there) — everything above was instead verified against a
+Python 3.11 venv and real local Postgres/Redis instances. If `make dev` doesn't come up
+cleanly, that's the first thing to check.
+
 ## Running locally (no Docker)
 
 ```bash
@@ -33,9 +48,10 @@ python3.11 -m venv venv
 ./venv/bin/pip install -e ".[dev]"
 ```
 
-Point `DATABASE_URL` at any disposable Postgres you have (local install, `pg_ctlcluster`, etc.) —
-`app/db/models.py`'s Postgres-specific column types (`ARRAY`, `JSONB`, `UUID`) mean SQLite won't
-work as a stand-in. Then:
+Point `DATABASE_URL` at any disposable Postgres you have (local install, `pg_ctlcluster`,
+etc.) — `app/db/models.py`'s Postgres-specific column types (`ARRAY`, `JSONB`, `UUID`) mean
+SQLite won't work as a stand-in. Point `REDIS_URL`/`CELERY_BROKER_URL`/`CELERY_RESULT_BACKEND`
+at any Redis instance (rate limiting and Celery both need one). Then:
 
 ```bash
 ./venv/bin/alembic upgrade head
@@ -44,18 +60,142 @@ work as a stand-in. Then:
 ./venv/bin/ruff check app tests && ./venv/bin/mypy app && ./venv/bin/black --check app tests
 ```
 
+To run the background workers (pollers, outbox dispatcher — see spec §11/§14):
+```bash
+./venv/bin/celery -A app.workers.celery_app worker --beat --loglevel=INFO
+```
+
+### Test database
+
+Tests never run against `DATABASE_URL` — always against `Settings.resolved_test_database_url`
+(that database's name + `_test`, or `TEST_DATABASE_URL` if you set it explicitly), so a test
+run's `create_all`/`drop_all` can never touch real data. The role needs `CREATEDB`, or create
+it once yourself:
+```sql
+CREATE DATABASE <your db name>_test OWNER <your db role>;
+```
+Tests also hit the real `REDIS_URL` (rate limiting, Celery) — there's no separate test Redis
+instance, since keys are namespaced by randomly-generated client/branch UUIDs per test and
+carry short TTLs, so collisions with real data aren't a practical risk.
+
 ## Pointing at KRA sandbox vs production
 
-Set `KRA_ENV=sandbox` or `KRA_ENV=production` in `.env`. The gateway picks `KRA_BASE_URL_SBX` or
-`KRA_BASE_URL_PROD` accordingly (see `app/core/config.py`). Always develop and test against
-sandbox; production credentials and cutover are a deliberate, separate step (see the spec's
-"Ask before assuming" section).
+Set `KRA_ENV=sandbox` or `KRA_ENV=production` in `.env`. The gateway picks `KRA_BASE_URL_SBX`
+or `KRA_BASE_URL_PROD` accordingly (see `app/core/config.py`). Always develop and test
+against sandbox; production credentials and cutover are a deliberate, separate step (see the
+build prompt's "Ask before assuming" section, and §20 of the spec).
 
-## Onboarding a new client / branch
+## Onboarding a new branch (device initialization)
 
-Filled in as Phases 4 (device init) and 9 (client auth) land.
+One-time, per `(tin, bhfId)` — spec §12. This is deliberately **not** reachable by SAP/ERP
+clients: it's gated behind `ADMIN_API_KEY` (an `X-Admin-Api-Key` header), a provisional
+mechanism Phase 9's OAuth2 system doesn't replace, since this endpoint's whole point is that
+ordinary clients must never touch it.
 
----
+```bash
+curl -X POST http://localhost:8000/v1/devices/initialize \
+  -H "X-Admin-Api-Key: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"branch_code": "NAIROBI-HQ", "tin": "A123456789Z", "bhf_id": "00"}'
+```
 
-The rest of this document (client onboarding, branch/device onboarding walkthroughs) is
-completed in Phase 11 once the endpoints it describes actually exist.
+This calls KRA's `/selectInitOsdcInfo` and persists the returned `cmcKey` (encrypted at
+rest — see `app/db/encrypted_types.py`) keyed by your internal `branch_code`. The response
+never includes `cmcKey` itself (see the automated check for this in
+`tests/api/test_device_endpoint.py`); every other endpoint references the branch by
+`branch_code` from then on, never `tin`/`bhfId`/`cmcKey` directly.
+
+If KRA returns `902` (already installed) and a local record already exists for that
+`(tin, bhfId)`, the call is treated as idempotent and returns the existing record. If `902`
+comes back with **no** local record, the gateway refuses to guess — it raises rather than
+silently re-initializing a fiscal device — and this needs manual investigation (see
+`app/services/cmc_key_manager.py`).
+
+## Onboarding a new client
+
+Clients authenticate via OAuth2 client-credentials (spec §15) — `clients.id` doubles as the
+OAuth2 `client_id`, and `clients.client_secret_hash` is a sha256 hash of the secret. There's
+no client-provisioning endpoint (out of scope for the phases this build covered), so create
+the row directly:
+
+```sql
+INSERT INTO clients (id, name, client_secret_hash, allowed_branch_ids)
+VALUES (
+    gen_random_uuid(),
+    'SAP-PROD',
+    -- sha256 of the raw secret you're handing to the client team — generate with:
+    --   python -c "import hashlib; print(hashlib.sha256(b'<raw-secret>').hexdigest())"
+    '<sha256 hex digest>',
+    ARRAY['<branch uuid from the branches table>']::uuid[]
+);
+```
+
+`allowed_branch_ids` is spec §15's per-client branch allow-listing — a client with valid
+credentials can still only act on the branches explicitly listed here (see
+`app/services/client_auth.py`'s `get_authorized_branch`). Hand the client team the `id` you
+generated (their OAuth2 `client_id`) and the raw secret (never store that raw value
+yourself — only its hash).
+
+The client then requests a token:
+```bash
+curl -X POST http://localhost:8000/oauth/token \
+  -d "grant_type=client_credentials&client_id=<the id>&client_secret=<the raw secret>"
+```
+which returns a short-lived (`JWT_ACCESS_TOKEN_EXPIRE_MINUTES`, default 30) bearer token to
+send as `Authorization: Bearer <token>` on every other request.
+
+## Registering an item and submitting a sale (smoke test)
+
+Once a branch and a client both exist:
+
+```bash
+TOKEN=<from /oauth/token above>
+
+curl -X POST http://localhost:8000/v1/items \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "branch_code": "NAIROBI-HQ", "sku": "BREAD-400G", "name": "Bread 400g",
+    "item_classification_cd": "5020150101", "unit_of_measure": "BA",
+    "packaging_unit": "NT", "product_type": "FINISHED_PRODUCT",
+    "tax_category": "STANDARD16", "unit_price": "100.00"
+  }'
+
+curl -X POST http://localhost:8000/v1/sales-invoices \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "branch_code": "NAIROBI-HQ", "external_invoice_ref": "SAP-BILLDOC-0001",
+    "payment_method": "CASH", "invoice_date": "2026-01-01",
+    "lines": [{"sku": "BREAD-400G", "description": "Bread 400g", "quantity": "2",
+               "unit_of_measure": "BA", "unit_price": "100.00", "tax_category": "STANDARD16"}]
+  }'
+```
+
+The sales response includes `kra_rcpt_sign`/`kra_cur_rcpt_no`/etc. — the fiscal receipt
+proof a compliant receipt is printed with (spec §6.6). Resubmitting the same
+`external_invoice_ref` returns the same cached response instead of calling KRA again
+(spec §13).
+
+## Observability
+
+See [`docs/observability.md`](observability.md) — structured JSON logs with request-ID
+correlation, Prometheus metrics at `GET /metrics`, and `GET /v1/health`'s per-resource
+last-successful-poll report.
+
+## Project layout
+
+```
+app/
+  api/            oauth.py (/oauth/token), metrics.py (/metrics), v1/ (versioned endpoints)
+  core/           config, security (cmcKey encryption), audit logging, metrics, rate limiting
+  db/             SQLAlchemy models, session, encrypted column type
+  schemas/kra/    1:1 Pydantic mirrors of KRA's JSON contracts (spec §6)
+  schemas/client/ simplified inbound DTOs for SAP/other ERPs (spec §9.2)
+  services/       business logic — one module per domain, plus the KRA adapter and mappers
+  workers/        Celery app, pollers, outbox dispatcher
+tests/
+  api/            endpoint-level tests (auth, status codes, response shape)
+  services/       business-logic tests (mapping, sync, idempotency, encryption, ...)
+  db/             model round-trip tests
+  integration/    live-sandbox tests, skipped by default (no credentials)
+  fixtures/       golden JSON fixtures for the KRA schema layer
+```

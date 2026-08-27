@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.db.models import Branch, Client, IdempotencyKey, Item, KraCodeList
 from app.db.session import get_db
 from app.main import app
+from app.services import idempotency
 from app.services.client_auth import hash_client_secret
 from tests.auth_helpers import bearer_header
 
@@ -189,3 +190,56 @@ async def test_unregistered_sku_is_422_and_releases_idempotency_claim(
         select(IdempotencyKey).where(IdempotencyKey.external_ref == "SAP-BILLDOC-BAD")
     )
     assert remaining is None
+
+
+async def test_kra_rejection_returns_502_and_releases_idempotency_claim(
+    api_client, branch, auth_headers, db_session
+):
+    kra_base_url = get_settings().kra_base_url
+    payload = json.loads(json.dumps(INVOICE_PAYLOAD))
+    payload["external_invoice_ref"] = "SAP-BILLDOC-KRA-DOWN"
+
+    with respx.mock(base_url=kra_base_url) as mock:
+        mock.post("/saveTrnsSalesOsdc").mock(
+            return_value=Response(
+                200,
+                json={
+                    "resultCd": "991",
+                    "resultMsg": "server error",
+                    "resultDt": "20200226143124",
+                    "data": None,
+                },
+            )
+        )
+        async with api_client as c:
+            response = await c.post("/v1/sales-invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 502
+    assert "991" in response.json()["detail"]
+
+    # The claim row should have been released, not left stuck forever — a real KRA-side
+    # failure must let the client retry the same external_ref, not be permanently blocked.
+    remaining = await db_session.scalar(
+        select(IdempotencyKey).where(IdempotencyKey.external_ref == "SAP-BILLDOC-KRA-DOWN")
+    )
+    assert remaining is None
+
+
+async def test_concurrent_submission_of_same_external_ref_is_409(
+    api_client, branch, auth_headers, registered_client, db_session
+):
+    payload = json.loads(json.dumps(INVOICE_PAYLOAD))
+    payload["external_invoice_ref"] = "SAP-BILLDOC-RACE"
+
+    # Simulate a first request that's already in flight (claimed but not yet completed) by
+    # calling the same claim primitive the endpoint itself uses.
+    claimed = await idempotency.claim_or_get_cached(
+        db_session, registered_client.id, "SAP-BILLDOC-RACE", "/v1/sales-invoices"
+    )
+    assert claimed is None  # confirms this test really did win the claim
+    await db_session.commit()
+
+    async with api_client as c:
+        response = await c.post("/v1/sales-invoices", json=payload, headers=auth_headers)
+
+    assert response.status_code == 409

@@ -73,3 +73,14 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+# SQLAlchemy's async ORM bridges sync/async execution via greenlet internally; without
+# telling coverage.py to follow execution across greenlet switches, statements that
+# genuinely ran (inside any async DB-touching code — nearly everything in this app) show up
+# as "not covered", which is a measurement artifact, not a real gap.
+concurrency = ["greenlet", "thread"]
+source = ["app"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]
