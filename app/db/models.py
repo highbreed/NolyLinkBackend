@@ -139,7 +139,13 @@ class KraCodeList(Base):
 
 
 class KraSyncState(Base):
-    """Per-(tin, bhfId, resource) lastReqDt watermark for incremental polling (spec §11)."""
+    """Per-(tin, bhfId, resource) lastReqDt watermark for incremental polling (spec §11).
+
+    updated_at is our own wall-clock time of the last successful sync, not spec §17's literal
+    DDL — added for Phase 10's "/v1/health includes last successful poll timestamp per
+    resource" and sync-lag metric, since last_req_dt is KRA's own timestamp (a resultDt
+    string, spec §11) and isn't reliably comparable to wall-clock "how stale is this".
+    """
 
     __tablename__ = "kra_sync_state"
 
@@ -147,6 +153,7 @@ class KraSyncState(Base):
     bhf_id: Mapped[str] = mapped_column(CHAR(2), primary_key=True)
     resource: Mapped[str] = mapped_column(String, primary_key=True)
     last_req_dt: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
 
 
 class IdempotencyKey(Base):

@@ -6,7 +6,7 @@ Rule (spec §2.2 rule 3 / §11): advance last_req_dt to the KRA server's own res
 client clock, and only on success — a failed sync must retry the same window next run.
 """
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,7 +39,9 @@ async def advance_last_req_dt(
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=[KraSyncState.tin, KraSyncState.bhf_id, KraSyncState.resource],
-        set_={"last_req_dt": stmt.excluded.last_req_dt},
+        # onupdate=func.now() on the column doesn't fire for a Core-level ON CONFLICT DO
+        # UPDATE, only for ORM-driven updates — set it explicitly rather than rely on that.
+        set_={"last_req_dt": stmt.excluded.last_req_dt, "updated_at": func.now()},
     )
     await db.execute(stmt)
     await db.flush()

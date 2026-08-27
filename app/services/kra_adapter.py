@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
+from app.core.metrics import kra_calls_total
 from app.db.models import KraCallLog
 from app.schemas.kra.branch import (
     BhfCustSaveReq,
@@ -205,6 +206,8 @@ class KraAdapter:
             )
         )
         await self._db.flush()
+
+        kra_calls_total.labels(endpoint=endpoint, result_cd=result_cd).inc()
 
         raise_for_result(result_cd, result_msg, result_dt)
         return response
