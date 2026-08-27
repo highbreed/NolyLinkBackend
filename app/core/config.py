@@ -59,13 +59,16 @@ class Settings(BaseSettings):
     # it activates code_cache_service's static-seed fallback for those four classifications.
     kra_large_code_tables_included_in_code_list: bool = True
 
-    # Polling cadence per resource (spec §11), in seconds. Only "codes" is used until later
-    # phases add their pollers.
+    # Polling cadence per resource (spec §11), in seconds.
     kra_poll_interval_codes_seconds: int = 6 * 60 * 60
     kra_poll_interval_notices_seconds: int = 60 * 60
     kra_poll_interval_import_items_seconds: int = 15 * 60
     kra_poll_interval_purchase_sales_seconds: int = 15 * 60
     kra_poll_interval_stock_moves_seconds: int = 15 * 60
+
+    # How often outbox_dispatcher checks for due rows (spec §14). Independent of the backoff
+    # schedule itself (30s/2m/10m/1h) — this just bounds how promptly a due retry is noticed.
+    kra_outbox_dispatch_interval_seconds: int = 30
 
     @property
     def kra_base_url(self) -> str:

@@ -221,3 +221,151 @@ class SalesInvoice(Base):
     kra_sdc_datetime: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="PENDING", server_default="PENDING")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+# --- Phase 8: purchases, stock, imports, notices ---------------------------------------
+#
+# None of these tables are in spec §17's literal DDL (only branches/clients/items/
+# kra_code_lists/kra_sync_state/idempotency_keys/outbox/kra_call_log/sales_invoices are), but
+# the Phase 8 endpoints explicitly need somewhere to cache "Get" data and record "Send"
+# submissions — the same situation Phase 6 hit with item_code_sequences.
+
+
+class ImportItemCache(Base):
+    """Cache of /selectImportItemList entries (spec §6.5), plus our own decision status once
+    POST /v1/imports/{taskCd}/decision has acted on a row.
+    """
+
+    __tablename__ = "import_item_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "branch_id", "task_cd", "dcl_de", "item_seq", name="uq_import_item_cache_natural_key"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), index=True
+    )
+    task_cd: Mapped[str] = mapped_column(String, index=True)
+    dcl_de: Mapped[str] = mapped_column(String)
+    item_seq: Mapped[int] = mapped_column()
+    dcl_no: Mapped[str] = mapped_column(String)
+    hs_cd: Mapped[str] = mapped_column(String)
+    item_nm: Mapped[str] = mapped_column(String)
+    orgn_nat_cd: Mapped[str] = mapped_column(String)
+    item_cls_cd: Mapped[str | None] = mapped_column(String)
+    item_cd: Mapped[str | None] = mapped_column(String)
+    impt_item_stts_cd: Mapped[str] = mapped_column(String, default="1", server_default="1")
+    raw_data: Mapped[dict[str, object]] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class PurchaseSalesCache(Base):
+    """Cache of /selectTrnsPurchaseSalesList entries (spec §6.7) — supplier-declared sales
+    not yet matched to one of our own purchase confirmations.
+
+    raw_data holds the full PurchaseSalesEntry (header fields incl. every taxblAmt/taxRt/
+    taxAmt A-E bucket, plus item_list) verbatim as returned by KRA. Only a few fields are
+    pulled out as real columns for filtering/display; everything else is reconstructed from
+    raw_data when confirming a purchase (app/services/purchase_service.py), so the buckets
+    sent back to KRA are exactly what KRA itself declared — never recomputed or guessed.
+    """
+
+    __tablename__ = "purchase_sales_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "branch_id", "spplr_tin", "spplr_invc_no", name="uq_purchase_sales_cache_natural_key"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), index=True
+    )
+    spplr_tin: Mapped[str] = mapped_column(CHAR(11))
+    spplr_invc_no: Mapped[str] = mapped_column(String)
+    tot_amt: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    raw_data: Mapped[dict[str, object]] = mapped_column(JSONB)
+    confirmed: Mapped[bool] = mapped_column(default=False, server_default="false")
+    synced_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class Purchase(Base):
+    """Business record for a purchase we submit via /insertTrnsPurchase (spec §6.7),
+    dispatched asynchronously through the outbox (spec §14).
+    """
+
+    __tablename__ = "purchases"
+    __table_args__ = (
+        UniqueConstraint("branch_id", "external_ref", name="uq_purchases_branch_id_external_ref"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), index=True
+    )
+    external_ref: Mapped[str] = mapped_column(String)
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("outbox.id"))
+    status: Mapped[str] = mapped_column(String, default="PENDING", server_default="PENDING")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class StockMoveCache(Base):
+    """Cache of /selectStockMoveList entries. spec §6.8/§20 gives no field list at all for
+    this endpoint's response (only "inter-branch movement history") — raw_data is a
+    permissive JSONB blob rather than invented columns, same pattern as
+    app/schemas/kra/stock.py's StockMoveEntry.
+    """
+
+    __tablename__ = "stock_move_cache"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), index=True
+    )
+    raw_data: Mapped[dict[str, object]] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class StockIOSubmission(Base):
+    """Business record for a stock in/out event submitted via /insertStockIO (spec §6.8),
+    dispatched asynchronously through the outbox (spec §14).
+    """
+
+    __tablename__ = "stock_io_submissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "branch_id", "external_ref", name="uq_stock_io_submissions_branch_id_external_ref"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), index=True
+    )
+    external_ref: Mapped[str] = mapped_column(String)
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("outbox.id"))
+    status: Mapped[str] = mapped_column(String, default="PENDING", server_default="PENDING")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class NoticeCache(Base):
+    """Cache of /selectNoticeList entries (spec §6.2)."""
+
+    __tablename__ = "notice_cache"
+    __table_args__ = (
+        UniqueConstraint("branch_id", "notice_no", name="uq_notice_cache_natural_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), index=True
+    )
+    notice_no: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(String)
+    cont: Mapped[str] = mapped_column(String)
+    dtl_url: Mapped[str | None] = mapped_column(String)
+    regr_nm: Mapped[str | None] = mapped_column(String)
+    reg_dt: Mapped[str | None] = mapped_column(String)
+    synced_at: Mapped[datetime] = mapped_column(server_default=func.now())
