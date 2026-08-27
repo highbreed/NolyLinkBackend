@@ -7,6 +7,12 @@ in the repo root for the full technical specification this project implements, a
 contract and sample payloads if you're the one integrating a source system against this
 gateway rather than building it.
 
+Other docs: [`api_reference.md`](api_reference.md) is the exhaustive endpoint-by-endpoint
+reference (every route, auth scheme, request/response shape, error code);
+[`client_onboarding_and_monitoring.md`](client_onboarding_and_monitoring.md) is a narrative
+walkthrough of onboarding a new client end to end and monitoring them afterward, naming the
+exact endpoint used at each step.
+
 ## Status
 
 All 11 build phases are implemented — device init, code-table caching, item/branch master
