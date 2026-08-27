@@ -147,6 +147,42 @@ credentials can still only act on the branches explicitly listed here (see
 generated (their OAuth2 `client_id`) and the raw secret (never store that raw value
 yourself — only its hash).
 
+## Client billing (subscriptions and invoices)
+
+This gateway's own tenant billing — entirely separate from KRA, and off (`BILLING_ENFORCEMENT_ENABLED=false`)
+by default. See [`app/services/billing_service.py`](../app/services/billing_service.py) for
+the enforcement rules. Internal tracking only: an admin marks invoices paid and subscriptions
+suspended directly; there's no payment processor integration (no real credentials for one
+were provided, same policy this build followed for KRA sandbox access throughout).
+
+Enabling enforcement blocks any client with no subscription on file, so **create a
+subscription for every existing client before flipping it on**:
+
+```bash
+curl -X PUT http://localhost:8000/v1/billing/subscriptions/<client id> \
+  -H "X-Admin-Api-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"plan_name": "STANDARD", "current_period_end": "2026-12-31T00:00:00Z"}'
+```
+
+A client keeps working for `BILLING_GRACE_PERIOD_DAYS` (default 7, overridable per-subscription
+via `grace_period_days`) past `current_period_end` before requests start getting `402`. Record
+an invoice and mark it paid (optionally renewing the subscription in the same call):
+
+```bash
+curl -X POST http://localhost:8000/v1/billing/clients/<client id>/invoices \
+  -H "X-Admin-Api-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"period_start": "2026-01-01T00:00:00Z", "period_end": "2026-02-01T00:00:00Z", "amount": "5000.00"}'
+
+curl -X POST http://localhost:8000/v1/billing/invoices/<invoice id>/mark-paid \
+  -H "X-Admin-Api-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"extend_subscription_to": "2026-02-01T00:00:00Z"}'
+```
+
+`POST /v1/billing/subscriptions/{client_id}/suspend` (with a `reason`) blocks a client
+immediately regardless of its paid-through date — e.g. for a chargeback — and
+`.../reactivate` lifts it. Renewing a subscription's period never lifts an explicit
+suspension on its own; reactivate is a separate, deliberate step.
+
 The client then requests a token:
 ```bash
 curl -X POST http://localhost:8000/oauth/token \

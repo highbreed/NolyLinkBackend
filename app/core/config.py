@@ -80,6 +80,17 @@ class Settings(BaseSettings):
     # spec — a config flag rather than a hardcoded guess.
     client_rate_limit_per_minute: int = 120
 
+    # Billing/subscription enforcement (this gateway's own tenant billing — not part of the
+    # KRA spec at all). Defaults OFF: flipping this on before every existing Client has a
+    # Subscription row would lock all of them out (app/services/billing_service.py fails
+    # closed — no subscription on file == blocked — once enabled), so this must be a
+    # deliberate cutover, not implied by deploying the code.
+    billing_enforcement_enabled: bool = False
+    # Days a client keeps working past Subscription.current_period_end before being blocked —
+    # absorbs invoice-processing lag so a late admin update doesn't look like an outage to a
+    # paying customer. Overridable per-subscription (Subscription.grace_period_days).
+    billing_grace_period_days: int = 7
+
     @property
     def kra_base_url(self) -> str:
         return self.kra_base_url_sbx if self.kra_env == "sandbox" else self.kra_base_url_prod

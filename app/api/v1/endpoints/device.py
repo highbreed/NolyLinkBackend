@@ -2,25 +2,16 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.admin_auth import require_admin
 from app.db.session import get_db
 from app.services import cmc_key_manager
 from app.services.kra_adapter import KraAdapter, KraError
 
 router = APIRouter()
-
-
-async def require_admin(x_admin_api_key: str = Header(default="")) -> None:
-    """Provisional admin gate — Phase 9 replaces this with the full client authN/Z system.
-    This endpoint must never be reachable by SAP/ERP clients (spec §12.2).
-    """
-    configured = get_settings().admin_api_key
-    if not configured or x_admin_api_key != configured:
-        raise HTTPException(status_code=403, detail="Admin access required")
 
 
 class DeviceInitRequest(BaseModel):

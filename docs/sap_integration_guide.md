@@ -53,6 +53,9 @@ every branch. A `branch_code` you weren't granted returns `403`.
 - **`401`** — missing/invalid/expired token. Get a new one.
 - **`403`** — your client isn't allowed to act on that `branch_code`.
 - **`404`** — unknown `branch_code`, or (for `GET`) the resource doesn't exist.
+- **`402`** — your organization's subscription with the gateway operator has lapsed or been
+  suspended (billing, not KRA) — contact your account rep, not KRA support. `detail` explains
+  why (no subscription on file, suspended with a reason, or past its grace period).
 - **`409`** — (sales invoices only) the same `external_invoice_ref` is already being
   processed by a concurrent request. Retry shortly.
 - **`422`** — validation error, or a referenced `sku` isn't registered yet (register it via

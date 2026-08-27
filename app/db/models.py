@@ -75,6 +75,59 @@ class Client(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class Subscription(Base):
+    """Per-client billing subscription — this gateway's own tenant billing, entirely outside
+    the KRA spec. Internal tracking only: an admin (app/api/v1/endpoints/billing.py) sets
+    current_period_end/status directly; there is no payment processor integration (same
+    "don't fabricate an integration without real credentials" policy this build followed for
+    KRA sandbox access all along).
+
+    status is only ACTIVE/SUSPENDED/CANCELLED — "lapsed but within grace period" is computed
+    at request time from current_period_end + grace_period_days
+    (app/services/billing_service.py), not tracked as a separate status, so nothing needs to
+    proactively flip it at the moment a grace period ends.
+    """
+
+    __tablename__ = "subscriptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clients.id"), unique=True, index=True
+    )
+    plan_name: Mapped[str] = mapped_column(String, default="STANDARD", server_default="STANDARD")
+    status: Mapped[str] = mapped_column(String, default="ACTIVE", server_default="ACTIVE")
+    current_period_end: Mapped[datetime] = mapped_column()
+    # None -> Settings.billing_grace_period_days applies instead.
+    grace_period_days: Mapped[int | None] = mapped_column()
+    # Set only by an explicit suspend action (e.g. fraud, chargeback) — independent of
+    # current_period_end, so renewing the period alone can never silently lift a suspension.
+    suspended_at: Mapped[datetime | None] = mapped_column()
+    suspended_reason: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class Invoice(Base):
+    """One billing-period invoice for a client. Internal record only — see Subscription's
+    docstring on payment-processor scope.
+    """
+
+    __tablename__ = "invoices"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clients.id"), index=True
+    )
+    period_start: Mapped[datetime] = mapped_column()
+    period_end: Mapped[datetime] = mapped_column()
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String, default="KES", server_default="KES")
+    status: Mapped[str] = mapped_column(String, default="ISSUED", server_default="ISSUED")
+    issued_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    paid_at: Mapped[datetime | None] = mapped_column()
+    notes: Mapped[str | None] = mapped_column(String)
+
+
 class Item(Base):
     """Item master, keyed by client-facing sku and KRA-format item_cd (spec §8)."""
 

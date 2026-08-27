@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.db.models import Branch, Client
 from app.db.session import get_db
-from app.services import cmc_key_manager
+from app.services import billing_service, cmc_key_manager
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/oauth/token")
 
@@ -46,6 +46,12 @@ async def get_current_client(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
         )
+
+    try:
+        await billing_service.enforce_active_subscription(db, client, settings)
+    except billing_service.SubscriptionBlockedError as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
+
     return client
 
 
