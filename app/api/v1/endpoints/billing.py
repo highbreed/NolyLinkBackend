@@ -6,6 +6,7 @@ Phase 9's client OAuth2 system — a tenant must never be able to see or touch i
 enforcement state through this surface.
 """
 
+import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -18,6 +19,8 @@ from app.core.admin_auth import require_admin
 from app.db.models import Invoice, Subscription
 from app.db.session import get_db
 from app.services import billing_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
@@ -54,6 +57,7 @@ def _to_subscription_out(sub: Subscription) -> SubscriptionOut:
 async def upsert_subscription(
     client_id: uuid.UUID,
     payload: SubscriptionUpsertRequest,
+    admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> SubscriptionOut:
     """Creates the subscription if none exists, else renews plan/period on the existing one.
@@ -68,6 +72,7 @@ async def upsert_subscription(
     except billing_service.ClientNotFoundError as exc:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("Subscription for client_id=%s upserted by %s", client_id, admin_actor)
     return _to_subscription_out(sub)
 
 
@@ -87,7 +92,10 @@ class SuspendRequest(BaseModel):
 
 @router.post("/subscriptions/{client_id}/suspend", response_model=SubscriptionOut)
 async def suspend_subscription(
-    client_id: uuid.UUID, payload: SuspendRequest, db: AsyncSession = Depends(get_db)
+    client_id: uuid.UUID,
+    payload: SuspendRequest,
+    admin_actor: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ) -> SubscriptionOut:
     try:
         sub = await billing_service.suspend_subscription(db, client_id, payload.reason)
@@ -95,12 +103,20 @@ async def suspend_subscription(
     except billing_service.SubscriptionNotFoundError as exc:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info(
+        "Subscription for client_id=%s suspended by %s (reason=%r)",
+        client_id,
+        admin_actor,
+        payload.reason,
+    )
     return _to_subscription_out(sub)
 
 
 @router.post("/subscriptions/{client_id}/reactivate", response_model=SubscriptionOut)
 async def reactivate_subscription(
-    client_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    client_id: uuid.UUID,
+    admin_actor: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ) -> SubscriptionOut:
     try:
         sub = await billing_service.reactivate_subscription(db, client_id)
@@ -108,12 +124,15 @@ async def reactivate_subscription(
     except billing_service.SubscriptionNotFoundError as exc:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("Subscription for client_id=%s reactivated by %s", client_id, admin_actor)
     return _to_subscription_out(sub)
 
 
 @router.post("/subscriptions/{client_id}/cancel", response_model=SubscriptionOut)
 async def cancel_subscription(
-    client_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    client_id: uuid.UUID,
+    admin_actor: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ) -> SubscriptionOut:
     try:
         sub = await billing_service.cancel_subscription(db, client_id)
@@ -121,6 +140,7 @@ async def cancel_subscription(
     except billing_service.SubscriptionNotFoundError as exc:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("Subscription for client_id=%s cancelled by %s", client_id, admin_actor)
     return _to_subscription_out(sub)
 
 
@@ -162,7 +182,10 @@ def _to_invoice_out(inv: Invoice) -> InvoiceOut:
 
 @router.post("/clients/{client_id}/invoices", response_model=InvoiceOut, status_code=201)
 async def create_invoice(
-    client_id: uuid.UUID, payload: InvoiceCreateRequest, db: AsyncSession = Depends(get_db)
+    client_id: uuid.UUID,
+    payload: InvoiceCreateRequest,
+    admin_actor: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ) -> InvoiceOut:
     try:
         inv = await billing_service.create_invoice(
@@ -178,6 +201,7 @@ async def create_invoice(
     except billing_service.ClientNotFoundError as exc:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("Invoice for client_id=%s created by %s", client_id, admin_actor)
     return _to_invoice_out(inv)
 
 
@@ -197,7 +221,10 @@ class MarkPaidRequest(BaseModel):
 
 @router.post("/invoices/{invoice_id}/mark-paid", response_model=InvoiceOut)
 async def mark_invoice_paid(
-    invoice_id: uuid.UUID, payload: MarkPaidRequest, db: AsyncSession = Depends(get_db)
+    invoice_id: uuid.UUID,
+    payload: MarkPaidRequest,
+    admin_actor: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ) -> InvoiceOut:
     try:
         inv = await billing_service.mark_invoice_paid(
@@ -207,4 +234,5 @@ async def mark_invoice_paid(
     except billing_service.InvoiceNotFoundError as exc:
         await db.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info("Invoice %s marked paid by %s", invoice_id, admin_actor)
     return _to_invoice_out(inv)

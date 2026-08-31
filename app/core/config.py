@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # unset (None) means the endpoint refuses every request rather than defaulting open.
     admin_api_key: str | None = None
 
+    # Admin portal login (app/services/admin_user_auth.py) — sits alongside admin_api_key
+    # above, not in place of it. Longer-lived than client tokens by default since this is a
+    # human's browser session, not a machine-to-machine credential re-requested on every 401.
+    admin_jwt_access_token_expire_minutes: int = 60
+
     # First lastReqDt to send for a resource never synced before. Not specified anywhere in
     # the source spec — a config flag rather than a hardcoded guess (spec §11).
     kra_sync_initial_last_req_dt: str = "20200101000000"

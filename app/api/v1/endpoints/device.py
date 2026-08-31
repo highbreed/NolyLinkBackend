@@ -1,5 +1,6 @@
 """POST /v1/devices/initialize, admin-only (spec §12, §18)."""
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,8 @@ from app.core.admin_auth import require_admin
 from app.db.session import get_db
 from app.services import cmc_key_manager
 from app.services.kra_adapter import KraAdapter, KraError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -40,14 +43,10 @@ class DeviceInitResponse(BaseModel):
     mrc_no: str | None
 
 
-@router.post(
-    "/initialize",
-    response_model=DeviceInitResponse,
-    status_code=201,
-    dependencies=[Depends(require_admin)],
-)
+@router.post("/initialize", response_model=DeviceInitResponse, status_code=201)
 async def initialize(
     payload: DeviceInitRequest,
+    admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> DeviceInitResponse:
     kra = KraAdapter(db=db)
@@ -77,6 +76,13 @@ async def initialize(
     finally:
         await kra.aclose()
 
+    logger.info(
+        "Device initialized for branch_code=%s tin=%s bhfId=%s by %s",
+        branch.branch_code,
+        branch.tin,
+        branch.bhf_id,
+        admin_actor,
+    )
     return DeviceInitResponse(
         branch_code=branch.branch_code,
         tin=branch.tin,

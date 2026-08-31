@@ -91,12 +91,33 @@ or `KRA_BASE_URL_PROD` accordingly (see `app/core/config.py`). Always develop an
 against sandbox; production credentials and cutover are a deliberate, separate step (see the
 build prompt's "Ask before assuming" section, and §20 of the spec).
 
+## Admin portal login
+
+Every admin-only route below accepts either the static `X-Admin-Api-Key` header **or** a
+bearer token from `POST /admin/login` — a human ops account (username + password), sitting
+alongside the static key rather than replacing it. There's no public signup: create the first
+account with the static key, then everyone after that can log in normally.
+
+```bash
+curl -X POST http://localhost:8000/admin/users \
+  -H "X-Admin-Api-Key: $ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"username": "amina", "password": "a-strong-password", "full_name": "Amina K."}'
+
+curl -X POST http://localhost:8000/admin/login \
+  -d '{"username": "amina", "password": "a-strong-password"}' -H "Content-Type: application/json"
+# -> {"access_token": "...", "token_type": "bearer", "expires_in": 3600}
+```
+
+Use that token as `Authorization: Bearer <token>` anywhere `X-Admin-Api-Key` is shown below —
+both examples are given as the static key purely for brevity. See
+[`api_reference.md`](api_reference.md#admin-portal-login) for the full endpoint list
+(deactivate/reactivate accounts, etc.).
+
 ## Onboarding a new branch (device initialization)
 
 One-time, per `(tin, bhfId)` — spec §12. This is deliberately **not** reachable by SAP/ERP
-clients: it's gated behind `ADMIN_API_KEY` (an `X-Admin-Api-Key` header), a provisional
-mechanism Phase 9's OAuth2 system doesn't replace, since this endpoint's whole point is that
-ordinary clients must never touch it.
+clients: it's gated behind admin auth (the static key or a portal login above), since this
+endpoint's whole point is that ordinary clients must never touch it.
 
 ```bash
 curl -X POST http://localhost:8000/v1/devices/initialize \

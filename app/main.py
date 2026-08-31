@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 
+from app.api.admin import router as admin_router
 from app.api.metrics import router as metrics_router
 from app.api.oauth import router as oauth_router
 from app.api.v1.router import api_router
@@ -18,4 +19,5 @@ app.add_middleware(AuditLogMiddleware)
 
 app.include_router(api_router)
 app.include_router(oauth_router, prefix="/oauth", tags=["oauth"])
+app.include_router(admin_router, prefix="/admin", tags=["admin"])
 app.include_router(metrics_router, tags=["observability"])

@@ -59,6 +59,26 @@ class Branch(Base):
     items: Mapped[list["Item"]] = relationship(back_populates="branch")
 
 
+class AdminUser(Base):
+    """A human account for the backend admin portal — sits alongside the static
+    X-Admin-Api-Key (app/core/admin_auth.py), not in place of it: either credential grants the
+    same admin access, so existing scripts/CI using the key keep working. See
+    app/services/admin_user_auth.py for password hashing (bcrypt, not sha256 — a human
+    password is low-entropy and needs slow, salted hashing, unlike Client.client_secret_hash's
+    generated high-entropy secret) and JWT issuance.
+    """
+
+    __tablename__ = "admin_users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username: Mapped[str] = mapped_column(String, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String)
+    full_name: Mapped[str | None] = mapped_column(String)
+    is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column()
+
+
 class Client(Base):
     """An inbound integration client (SAP-PROD, POS-VENDOR-X, ...) — spec §15.
 

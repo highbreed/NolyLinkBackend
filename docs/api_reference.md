@@ -14,8 +14,9 @@ token endpoint and a Prometheus scrape target).
 | Scheme | Header | Used by |
 |---|---|---|
 | **Client bearer (JWT)** | `Authorization: Bearer <token>` | Every `/v1/*` endpoint except `/v1/health` and `/v1/devices/*` |
-| **Admin key** | `X-Admin-Api-Key: <key>` | `/v1/devices/initialize`, all of `/v1/billing/*` |
-| **None** | — | `/oauth/token` (the grant exchange itself), `/v1/health`, `/metrics` |
+| **Admin key** | `X-Admin-Api-Key: <key>` | `/v1/devices/initialize`, all of `/v1/billing/*`, all of `/admin/*` except `/admin/login` itself |
+| **Admin bearer (JWT)** | `Authorization: Bearer <token>` | Same routes as the admin key — either credential grants identical access, see [Admin Login](#admin-portal-login) |
+| **None** | — | `/oauth/token`, `/admin/login` (the grant exchanges themselves), `/v1/health`, `/metrics` |
 
 Client bearer tokens are obtained from `POST /oauth/token` (below) and expire after
 `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default 30). There is no refresh grant — request a new
@@ -68,9 +69,70 @@ OAuth2 client-credentials grant (RFC 6749 §4.4). Unversioned, matching standard
 
 ---
 
+## Admin Portal Login
+
+Human ops-staff login for the backend admin portal — sits **alongside** the static
+`X-Admin-Api-Key`, not in place of it. Either credential grants identical access on every
+admin route (`/v1/devices/initialize`, `/v1/billing/*`, `/admin/users/*`). There is no public
+signup: the first `AdminUser` has to be created with the static key, and every admin user
+management route below is itself admin-gated.
+
+Admin JWTs are signed with the same `JWT_SECRET_KEY` as client OAuth2 tokens but carry a
+`"type": "admin"` claim client tokens never have — a client's own bearer token can never be
+replayed against an admin route, and vice versa.
+
+### `POST /admin/login`
+
+**Auth:** none (this *is* the login).
+
+**Request:** `{"username": "amina", "password": "..."}`
+
+**Response** `200`:
+```json
+{"access_token": "eyJhbGciOi...", "token_type": "bearer", "expires_in": 3600}
+```
+Expiry is `ADMIN_JWT_ACCESS_TOKEN_EXPIRE_MINUTES` (default 60 — longer-lived than client
+tokens by default, since this is a human's browser session, not a machine credential
+re-requested on every `401`). There is no refresh grant, same as `/oauth/token`.
+
+**Errors:** `401` — unknown username, wrong password, or a deactivated account. The same
+error either way, deliberately — distinguishing them would let an attacker enumerate valid
+usernames.
+
+### `POST /admin/users`
+
+Creates a new admin portal account. **Admin-gated** (key or an existing admin's token).
+
+**Request:** `username`, `password` (8-72 bytes — 72 is bcrypt's own hard limit), `full_name`
+(optional).
+
+**Response** `201`:
+```json
+{"id": "...", "username": "amina", "full_name": "Amina K.", "is_active": true, "created_at": "...", "last_login_at": null}
+```
+(Never includes the password or its hash.) **Errors:** `409` — username already taken; `422`
+— password outside the 8-72 byte range.
+
+### `GET /admin/users`
+
+Lists every admin user, alphabetically by username. Admin-gated.
+
+### `POST /admin/users/{user_id}/deactivate`
+
+Disables an account immediately — including any bearer token it already holds; every
+`Authorization` check re-verifies `is_active` against the database on each request, so this
+isn't just "can't log in again," it revokes access mid-session too. Admin-gated.
+**Errors:** `404` — unknown `user_id`.
+
+### `POST /admin/users/{user_id}/reactivate`
+
+Restores a deactivated account. Admin-gated. **Errors:** `404` — unknown `user_id`.
+
+---
+
 ## Admin — Device Provisioning
 
-Admin-only (`X-Admin-Api-Key`); never reachable by SAP/ERP clients.
+Admin-only (`X-Admin-Api-Key` or an admin portal bearer token); never reachable by SAP/ERP clients.
 
 ### `POST /v1/devices/initialize`
 
@@ -111,8 +173,9 @@ encrypted at rest, and creates the `branches` row every other endpoint reference
 
 ## Admin — Billing
 
-Admin-only (`X-Admin-Api-Key`). This is the gateway's own tenant billing — entirely outside
-the KRA spec. Internal tracking only: no payment processor integration. See
+Admin-only (`X-Admin-Api-Key` or an admin portal bearer token). This is the gateway's own
+tenant billing — entirely outside the KRA spec. Internal tracking only: no payment processor
+integration. See
 [`billing_service.py`](../app/services/billing_service.py) for the enforcement rules and the
 [onboarding doc](client_onboarding_and_monitoring.md) for the full lifecycle story.
 
