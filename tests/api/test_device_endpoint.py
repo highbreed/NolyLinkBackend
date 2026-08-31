@@ -80,3 +80,26 @@ async def test_initialize_success_never_leaks_cmc_key(client, caplog):
     assert plaintext_cmc_key not in response.text
     for record in caplog.records:
         assert plaintext_cmc_key not in record.getMessage()
+
+
+async def test_kra_host_returning_404_is_a_clean_502_not_an_unhandled_500(client):
+    """Reproduces a real incident: KRA_BASE_URL_SBX pointed at a real device whose
+    /selectInitOsdcInfo path 404'd — an HTTP-transport-level failure with no KRA JSON
+    envelope at all, which used to escape as an unhandled 500 (see
+    app/services/kra_adapter.py's KraTransportError).
+    """
+    admin_key = get_settings().admin_api_key
+    assert admin_key, "ADMIN_API_KEY must be set in the test environment's .env"
+    kra_base_url = get_settings().kra_base_url
+
+    with respx.mock(base_url=kra_base_url) as mock:
+        mock.post("/selectInitOsdcInfo").mock(return_value=Response(404, text="Not Found"))
+        async with client as c:
+            response = await c.post(
+                "/v1/devices/initialize",
+                json={"branch_code": "NAIROBI-HQ", "tin": "A123456789Z", "bhf_id": "00"},
+                headers={"X-Admin-Api-Key": admin_key},
+            )
+
+    assert response.status_code == 502
+    assert "404" in response.json()["detail"]

@@ -5,6 +5,7 @@ mock the KRA HTTP transport, plus call logging.
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 import respx
 from httpx import Response
@@ -20,6 +21,7 @@ from app.services.kra_adapter import (
     KraDuplicateError,
     KraRateLimitError,
     KraTransientServerError,
+    KraTransportError,
     KraUnknownError,
     KraValidationError,
 )
@@ -190,3 +192,52 @@ async def test_branch_kra_base_url_override_routes_call_to_that_host(
 
     assert route.call_count == 1
     assert result.resultCd == "000"
+
+
+async def test_http_404_from_the_kra_host_raises_kra_transport_error_not_a_raw_httpx_error(
+    adapter: KraAdapter, db_session
+):
+    """Reproduces a real incident: a misconfigured/misrouted KRA_BASE_URL_* (wrong path, wrong
+    device firmware) returns a plain HTTP 404 with no JSON envelope at all. Before this fix,
+    httpx_response.raise_for_status() raised an unhandled httpx.HTTPStatusError straight
+    through every caller's `except KraError` handling, surfacing as an unhandled 500 instead
+    of a clean 502 (app/api/v1/endpoints/device.py and friends only ever caught KraError).
+    """
+    req = CodeSearchReq.model_validate(load_fixture("code_search_req"))
+
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.post("/selectCodeList").mock(return_value=Response(404, text="Not Found"))
+        with pytest.raises(KraTransportError) as exc_info:
+            await adapter.get_code_list(req)
+
+    assert exc_info.value.result_cd == "HTTP_404"
+    assert "404" in exc_info.value.result_msg
+
+
+async def test_connection_failure_raises_kra_transport_error(adapter: KraAdapter, db_session):
+    """A device that's simply unreachable (down, wrong IP, network partition) — httpx raises
+    a connection-level error, not an HTTP status at all, before this fix that also escaped
+    every caller's except KraError.
+    """
+    req = CodeSearchReq.model_validate(load_fixture("code_search_req"))
+
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.post("/selectCodeList").mock(side_effect=httpx.ConnectError("Connection refused"))
+        with pytest.raises(KraTransportError) as exc_info:
+            await adapter.get_code_list(req)
+
+    assert exc_info.value.result_cd == "TRANSPORT_ERROR"
+    assert "ConnectError" in exc_info.value.result_msg
+
+
+async def test_transport_failure_is_still_logged_to_kra_call_log(adapter: KraAdapter, db_session):
+    req = CodeSearchReq.model_validate(load_fixture("code_search_req"))
+
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.post("/selectCodeList").mock(return_value=Response(404, text="Not Found"))
+        with pytest.raises(KraTransportError):
+            await adapter.get_code_list(req)
+
+    rows = (await db_session.execute(select(KraCallLog))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].result_cd == "HTTP_404"

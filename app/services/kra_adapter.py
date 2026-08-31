@@ -10,6 +10,7 @@ KraTransientServerError) — that backoff-and-retry loop is the outbox_dispatche
 import hashlib
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 import httpx
@@ -112,6 +113,19 @@ class KraDuplicateError(KraError):
 
 class KraUnknownError(KraError):
     """995 (no downloaded file, N/A for our endpoints) or any resultCd not in spec §10's table."""
+
+
+class KraTransportError(KraError):
+    """The HTTP call itself failed — wrong host/path, the device is unreachable, a timeout, or
+    a non-2xx HTTP status — before there was ever a KRA JSON envelope with a resultCd to
+    inspect. Distinct from every other KraError subclass above, which all classify KRA's own
+    business-level response. result_cd here is a synthetic marker (e.g. "HTTP_404" or
+    "TRANSPORT_ERROR"), never one KRA issued. Treated as retriable by outbox_dispatcher.py
+    (falls through to its generic `except KraError` branch, same bucket as
+    KraTransientServerError) since a wrong path or unreachable device today may well recover —
+    but every synchronous caller (device init, items, sales, ...) surfaces it as a 502 exactly
+    like any other KraError, so it's never a raw unhandled 500.
+    """
 
 
 def raise_for_result(result_cd: str, result_msg: str, result_dt: str) -> None:
@@ -223,8 +237,42 @@ class KraAdapter:
         # different branches pointed at different hosts (needed by outbox_dispatcher, which
         # dispatches rows for many branches through one shared KraAdapter).
         url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
-        http_response = await self._client.post(url, json=body)
-        http_response.raise_for_status()
+
+        try:
+            http_response = await self._client.post(url, json=body)
+            http_response.raise_for_status()
+        except httpx.HTTPError as exc:
+            # Never a KRA resultCd here — the call itself failed (wrong host/path, device
+            # unreachable, timeout, or a non-2xx status). Logged the same as any other call
+            # (synthetic result_cd, never the real request body) so this shows up in
+            # kra_call_log/metrics exactly like a business-level failure would, then raised as
+            # a KraError so every caller's existing error handling covers it uniformly instead
+            # of leaking an unhandled 500.
+            if isinstance(exc, httpx.HTTPStatusError):
+                synthetic_result_cd = f"HTTP_{exc.response.status_code}"
+                synthetic_result_msg = f"HTTP {exc.response.status_code} calling {url}"
+            else:
+                synthetic_result_cd = "TRANSPORT_ERROR"
+                synthetic_result_msg = f"{type(exc).__name__} calling {url}: {exc}"
+            synthetic_result_dt = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+
+            self._db.add(
+                KraCallLog(
+                    branch_id=branch_id,
+                    endpoint=endpoint,
+                    request_hash=request_hash,
+                    result_cd=synthetic_result_cd,
+                    result_msg=synthetic_result_msg,
+                    result_dt=synthetic_result_dt,
+                )
+            )
+            await self._db.flush()
+            kra_calls_total.labels(endpoint=endpoint, result_cd=synthetic_result_cd).inc()
+
+            raise KraTransportError(
+                synthetic_result_cd, synthetic_result_msg, synthetic_result_dt
+            ) from exc
+
         response = response_model.model_validate(http_response.json())
 
         result_cd = response.resultCd
