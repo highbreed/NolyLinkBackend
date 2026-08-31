@@ -83,12 +83,12 @@ async def initialize_device(
 
     branch = Branch(
         branch_code=branch_code,
-        tin=res.data.taxpayer.tin,
-        bhf_id=res.data.branch.bhfId,
-        cmc_key=res.data.device.cmcKey,
-        dvc_id=res.data.device.dvcId,
-        sdc_id=res.data.device.sdcId,
-        mrc_no=res.data.device.mrcNo,
+        tin=res.data.info.tin,
+        bhf_id=res.data.info.bhfId,
+        cmc_key=res.data.info.cmcKey,
+        dvc_id=res.data.info.dvcId,
+        sdc_id=res.data.info.sdcId,
+        mrc_no=res.data.info.mrcNo,
         device_type=device_type,
         kra_base_url_override=kra_base_url_override,
     )

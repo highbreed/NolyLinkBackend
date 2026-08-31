@@ -37,7 +37,7 @@ def kra(db_session, adapter_settings: Settings) -> KraAdapter:
 
 async def test_initialize_device_persists_encrypted_cmc_key(db_session, kra, caplog):
     res_body = load_fixture("device_verification_res")
-    plaintext_cmc_key = res_body["data"]["device"]["cmcKey"]
+    plaintext_cmc_key = res_body["data"]["info"]["cmcKey"]
 
     with caplog.at_level(logging.INFO), respx.mock(base_url=BASE_URL) as mock:
         mock.post("/selectInitOsdcInfo").mock(return_value=Response(200, json=res_body))

@@ -58,7 +58,7 @@ async def test_initialize_success_never_leaks_cmc_key(client, caplog):
     assert admin_key, "ADMIN_API_KEY must be set in the test environment's .env"
 
     res_body = load_fixture("device_verification_res")
-    plaintext_cmc_key = res_body["data"]["device"]["cmcKey"]
+    plaintext_cmc_key = res_body["data"]["info"]["cmcKey"]
     kra_base_url = get_settings().kra_base_url
 
     with caplog.at_level(logging.INFO), respx.mock(base_url=kra_base_url) as mock:

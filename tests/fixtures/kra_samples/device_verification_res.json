@@ -3,12 +3,10 @@
   "resultMsg": "It is succeeded",
   "resultDt": "20200226143124",
   "data": {
-    "taxpayer": {
+    "info": {
       "tin": "A123456789Z",
       "taxprNm": "ACME LTD",
-      "bsnsActv": "Retail"
-    },
-    "branch": {
+      "bsnsActv": "Retail",
       "bhfId": "00",
       "bhfNm": "Head Office",
       "bhfOpenDt": "20200101",
@@ -19,9 +17,7 @@
       "hqYn": "Y",
       "mgrNm": "Jane Doe",
       "mgrTelNo": "0700000000",
-      "mgrEmail": "jane@example.com"
-    },
-    "device": {
+      "mgrEmail": "jane@example.com",
       "dvcId": "DVC001",
       "sdcId": "SDC001",
       "mrcNo": "MRC001",

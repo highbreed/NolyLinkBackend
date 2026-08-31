@@ -1,4 +1,11 @@
-"""Pydantic mirror of /selectInitOsdcInfo request/response (spec §6.1)."""
+"""Pydantic mirror of /selectInitOsdcInfo request/response (spec §6.1).
+
+Verified 2026-08-31 against KRA's own published "OSCU Requirements & Communication
+Protocols v2.0" (April 2023, kra.go.ke/images/publications/OSCU_Specification_Document_v2.0.pdf)
+§3.3.1 — the JSON sample there confirms the response nests taxpayer/branch/device fields
+together under a single flat `data.info` object, not three separate sub-objects as originally
+guessed (that guess was explicitly flagged as unconfirmed in this file's own prior revision).
+"""
 
 from pydantic import BaseModel, Field
 
@@ -13,13 +20,14 @@ class DeviceVerificationReq(BaseModel):
     dvcSrlNo: str = Field(max_length=100)
 
 
-class InitTaxpayer(BaseModel):
+class InitInfo(BaseModel):
+    """Taxpayer, branch, and device fields all flattened into one object per the confirmed
+    real response shape — spec §3.3.1's JSON sample nests everything under `data.info`.
+    """
+
     tin: str
     taxprNm: str
     bsnsActv: str
-
-
-class InitBranch(BaseModel):
     bhfId: str
     bhfNm: str
     bhfOpenDt: str
@@ -31,9 +39,6 @@ class InitBranch(BaseModel):
     mgrNm: str
     mgrTelNo: str
     mgrEmail: str
-
-
-class InitDevice(BaseModel):
     dvcId: str
     sdcId: str
     mrcNo: str
@@ -41,14 +46,7 @@ class InitDevice(BaseModel):
 
 
 class DeviceVerificationData(BaseModel):
-    """Nesting keys (taxpayer/branch/device) aren't spelled out verbatim in the source spec
-    text (it just lists the three sub-objects) — confirm against a live sandbox response
-    before relying on these key names.
-    """
-
-    taxpayer: InitTaxpayer
-    branch: InitBranch
-    device: InitDevice
+    info: InitInfo
 
 
 class DeviceVerificationRes(KraResponseEnvelope[DeviceVerificationData]):
