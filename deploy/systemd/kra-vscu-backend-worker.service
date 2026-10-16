@@ -1,0 +1,26 @@
+[Unit]
+Description=KRA VSCU/OSCU Gateway - Celery Worker (outbox dispatch + KRA/VSCU pollers)
+After=network.target redis-server.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+User=dev
+Group=dev
+WorkingDirectory=/home/dev/web_files/kra_vscu/production/kra_vscu_backend
+Environment="PATH=/home/dev/web_files/kra_vscu/production/kra_vscu_backend/venv/bin:/usr/bin"
+EnvironmentFile=/home/dev/web_files/kra_vscu/production/kra_vscu_backend/.env
+StandardOutput=append:/home/dev/web_files/kra_vscu/production/kra_vscu_backend/logs/worker.log
+StandardError=append:/home/dev/web_files/kra_vscu/production/kra_vscu_backend/logs/worker.log
+ExecStart=/home/dev/web_files/kra_vscu/production/kra_vscu_backend/venv/bin/celery \
+  -A app.workers.celery_app worker \
+  --loglevel=info \
+  --concurrency=4
+
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -23,6 +23,10 @@ dependencies = [
     "prometheus-client>=0.20,<1.0",
     "python-json-logger>=2.0,<3.0",
     "python-multipart>=0.0.9,<1.0",
+    # Production process manager (deploy/) — uvicorn alone (the dev/Docker CMD) has no
+    # multi-worker process supervision of its own; every sibling service on this box runs
+    # behind gunicorn's UvicornWorker for that reason.
+    "gunicorn>=22.0,<24.0",
 ]
 
 [project.optional-dependencies]
