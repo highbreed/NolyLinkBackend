@@ -31,3 +31,15 @@ kra_sync_lag_seconds = Gauge(
     "Seconds since the last successful poll, per resource (spec §11)",
     labelnames=["resource"],
 )
+
+vscu_requests_total = Counter(
+    "vscu_requests_total",
+    "VSCU integration layer calls by endpoint and resultCd",
+    labelnames=["endpoint", "result_cd"],
+)
+
+vscu_request_duration_seconds = Histogram(
+    "vscu_request_duration_seconds",
+    "VSCU local-app call latency in seconds",
+    labelnames=["endpoint"],
+)

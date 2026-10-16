@@ -13,3 +13,7 @@ dist/
 build/
 .DS_Store
 .claude/
+
+# Vendor artifact (decompiled KRA vscu-v2.0.21.jar, used only for spec analysis) — not our
+# source code, ~250MB, never belongs in version control.
+vscu_jar_file/

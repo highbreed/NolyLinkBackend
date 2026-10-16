@@ -4,13 +4,14 @@ for speed; this file is what actually exercises it.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from jose import jwt
 
 from app.core.config import get_settings
-from app.db.models import Client
+from app.db.models import Client, Customer
 from app.db.session import get_db
 from app.main import app
 from app.services.client_auth import hash_client_secret
@@ -32,8 +33,11 @@ def api_client(db_session):
 @pytest.fixture
 async def registered_client(db_session) -> tuple[Client, str]:
     raw_secret = "correct-horse-battery-staple"
+    customer = Customer(name="SAP-TEST", allowed_branch_ids=[])
+    db_session.add(customer)
+    await db_session.flush()
     client = Client(
-        name="SAP-TEST", client_secret_hash=hash_client_secret(raw_secret), allowed_branch_ids=[]
+        name="SAP-TEST", client_secret_hash=hash_client_secret(raw_secret), customer_id=customer.id
     )
     db_session.add(client)
     await db_session.flush()
@@ -122,3 +126,44 @@ async def test_issue_token_wrong_grant_type_is_400(api_client, registered_client
             },
         )
     assert response.status_code == 400
+
+
+async def test_issue_token_for_revoked_client_is_401(api_client, db_session, registered_client):
+    client, raw_secret = registered_client
+    client.revoked_at = datetime.now(UTC)
+    await db_session.flush()
+
+    async with api_client as c:
+        response = await c.post(
+            "/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": str(client.id),
+                "client_secret": raw_secret,
+            },
+        )
+    assert response.status_code == 401
+
+
+async def test_token_issued_before_revocation_stops_working_after(
+    api_client, db_session, registered_client
+):
+    client, raw_secret = registered_client
+    async with api_client as c:
+        token_response = await c.post(
+            "/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": str(client.id),
+                "client_secret": raw_secret,
+            },
+        )
+        access_token = token_response.json()["access_token"]
+
+        client.revoked_at = datetime.now(UTC)
+        await db_session.flush()
+
+        codes_response = await c.get(
+            "/v1/codes/tax-type", headers={"Authorization": f"Bearer {access_token}"}
+        )
+    assert codes_response.status_code == 401

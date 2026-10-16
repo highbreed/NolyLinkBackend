@@ -33,6 +33,43 @@ def generate_dvc_srl_no(tin: str, bhf_id: str, settings: Settings | None = None)
     return f"{settings.kra_env}-{tin}-{bhf_id}-{uuid.uuid4()}"
 
 
+async def _register_vscu_branch_locally(
+    db: AsyncSession, branch_code: str, tin: str, bhf_id: str
+) -> Branch:
+    """VSCU has no KRA-hosted registration call at all — confirmed by decompiling
+    vscu-v2.0.21.jar (docs/kra_specs/README.md's 2026-09-01 correction): the jar's only
+    initialization endpoint is /initializer/selectInitInfo against the LOCAL VSCU app
+    (app/services/vscu_service.py's VSCUInitializationService.initialize), not any
+    /selectInitOsdcInfo-equivalent hosted by KRA. So this never calls real KRA — the Branch row
+    is created locally from admin-supplied values, with no cmcKey (the local VSCU app owns its
+    own KRA trust anchor internally and never exposes it to this gateway, same as
+    VscuDeviceState never storing signKey/intrlKey).
+
+    Idempotent by (tin, bhfId), mirroring initialize_device's own 902-already-provisioned
+    handling for OSCU, so re-submitting the same onboarding request after a partial failure is
+    safe here too.
+    """
+    existing = await db.scalar(select(Branch).where(Branch.tin == tin, Branch.bhf_id == bhf_id))
+    if existing is not None:
+        logger.info(
+            "VSCU branch already registered for tin=%s bhfId=%s; using existing record", tin, bhf_id
+        )
+        return existing
+
+    branch = Branch(
+        branch_code=branch_code, tin=tin, bhf_id=bhf_id, cmc_key=None, device_type="VSCU"
+    )
+    db.add(branch)
+    await db.flush()
+    logger.info(
+        "VSCU branch registered locally for branch_code=%s tin=%s bhfId=%s",
+        branch_code,
+        tin,
+        bhf_id,
+    )
+    return branch
+
+
 async def initialize_device(
     db: AsyncSession,
     kra: KraAdapter,
@@ -46,10 +83,12 @@ async def initialize_device(
     `branches`, encrypted at rest, keyed by (tin, bhfId) with branch_code as the only
     identifier client systems and other services ever reference (spec §12.3).
 
-    device_type/kra_base_url_override are stored on the branch so every later call for it
-    (Phases 5-8) automatically targets the right host — OSCU and VSCU share this exact
-    request/response contract, so nothing else about the flow changes.
+    device_type="VSCU" skips real KRA entirely — see _register_vscu_branch_locally.
+    kra_base_url_override is OSCU-only and ignored in that case (nothing left to override).
     """
+    if device_type == "VSCU":
+        return await _register_vscu_branch_locally(db, branch_code, tin, bhf_id)
+
     dvc_srl_no = generate_dvc_srl_no(tin, bhf_id)
     req = DeviceVerificationReq(tin=tin, bhfId=bhf_id, dvcSrlNo=dvc_srl_no)
 

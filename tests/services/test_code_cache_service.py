@@ -10,7 +10,7 @@ import respx
 from httpx import Response
 
 from app.core.config import Settings
-from app.db.models import Branch, KraSyncState
+from app.db.models import Branch, KraCodeClassification, KraSyncState
 from app.services import code_cache_service
 from app.services.kra_adapter import KraAdapter, KraTransientServerError
 
@@ -57,6 +57,29 @@ async def test_refresh_populates_cache_and_advances_last_req_dt(db_session, kra,
     )
     assert state is not None
     assert state.last_req_dt == res_body["resultDt"]
+
+
+async def test_refresh_captures_classification_name(db_session, kra, branch):
+    """KRA's own cdClsNm ("Tax Type" for cd_cls="04", per the fixture) is real ground truth for
+    what a classification means — previously discarded, now captured into
+    KraCodeClassification rather than left for admins to guess at from raw cd_cls numbers.
+    """
+    res_body = load_fixture("code_search_res")
+
+    with respx.mock(base_url=BASE_URL) as mock:
+        mock.post("/selectCodeList").mock(return_value=Response(200, json=res_body))
+        await code_cache_service.refresh_code_list(db_session, kra, branch)
+
+    classification = await db_session.get(KraCodeClassification, "04")
+    assert classification is not None
+    assert classification.cd_cls_nm == "Tax Type"
+    assert classification.cd_cls_desc == "Tax Type"
+
+    summary = await code_cache_service.get_classification_summary(db_session)
+    row = next(r for r in summary if r.cd_cls == "04")
+    assert row.slug == "tax-type"
+    assert row.cd_cls_nm == "Tax Type"
+    assert row.count == 1
 
 
 async def test_refresh_does_not_advance_last_req_dt_on_failure(db_session, kra, branch):
@@ -123,3 +146,12 @@ def test_resolve_classification_accepts_slug_and_raw_cd_cls():
 
 async def test_get_codes_returns_empty_list_for_unknown_classification(db_session):
     assert await code_cache_service.get_codes(db_session, "nonexistent") == []
+
+
+def test_canonical_classification_key_normalizes_both_directions():
+    # Already a known slug -> unchanged.
+    assert code_cache_service.canonical_classification_key("tax-type") == "tax-type"
+    # Raw cd_cls with a known slug -> the slug (so it matches how allow-list rows are keyed).
+    assert code_cache_service.canonical_classification_key("04") == "tax-type"
+    # Raw cd_cls with no known slug -> unchanged (no rewrite possible).
+    assert code_cache_service.canonical_classification_key("99") == "99"

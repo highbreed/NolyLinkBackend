@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Client, StockIOSubmission, StockMoveCache
 from app.db.session import get_db
 from app.schemas.client.stock_in import ClientStockIOIn, ClientStockMasterIn
-from app.services import stock_service
+from app.services import stock_service, vscu_stock_service
 from app.services.client_auth import get_authorized_branch
 from app.services.mapping.generic_mapper import CodeLookupError
 from app.services.rate_limit import enforce_rate_limit
@@ -58,8 +58,14 @@ async def submit_stock_movement(
     branch = await get_authorized_branch(db, client, payload.branch_code)
 
     try:
-        submission: StockIOSubmission = await stock_service.submit_stock_io(db, branch, payload)
+        submission: StockIOSubmission = (
+            await vscu_stock_service.submit_stock_io(db, branch, payload)
+            if branch.device_type == "VSCU"
+            else await stock_service.submit_stock_io(db, branch, payload)
+        )
     except CodeLookupError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except vscu_stock_service.InvalidExternalRef as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     await db.commit()
@@ -79,7 +85,10 @@ async def submit_stock_master(
     branch = await get_authorized_branch(db, client, payload.branch_code)
 
     try:
-        await stock_service.submit_stock_master(db, branch, payload)
+        if branch.device_type == "VSCU":
+            await vscu_stock_service.submit_stock_master(db, branch, payload)
+        else:
+            await stock_service.submit_stock_master(db, branch, payload)
     except CodeLookupError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

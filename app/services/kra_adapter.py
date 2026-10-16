@@ -197,12 +197,14 @@ class KraAdapter:
         base_url_override: str | None,
         device_type: str | None,
     ) -> str:
-        """OSCU and VSCU devices share this exact request/response contract (spec-confirmed) —
-        the only thing that differs per branch is which host to call. Precedence:
-        base_url_override (an explicit per-call/per-branch pin) > the branch's own
-        kra_base_url_override column (steady-state calls, resolved via branch_id) >
-        device_type's global default (only relevant for /selectInitOsdcInfo, called before any
-        Branch row exists) > the plain OSCU global default.
+        """OSCU-only in practice (2026-09-02): VSCU has no KRA-hosted call at all — see
+        app/services/cmc_key_manager.py's _register_vscu_branch_locally, which never invokes
+        KraAdapter for a VSCU branch — so the device_type branch below is effectively dead
+        code today, kept only in case a genuinely VSCU-relevant KRA-hosted call is ever
+        confirmed to exist. Precedence: base_url_override (an explicit per-call/per-branch
+        pin) > the branch's own kra_base_url_override column (steady-state OSCU calls,
+        resolved via branch_id) > device_type's global default > the plain OSCU global
+        default.
 
         Always resolves through self._settings (never the module-level get_settings()), so a
         KraAdapter constructed with injected test settings never leaks into a real config.

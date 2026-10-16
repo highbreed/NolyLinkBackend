@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     # VSCU branch is initialized.
     kra_base_url_vscu_prod: str = ""
     kra_base_url_vscu_sbx: str = ""
+    # The receipt-verification URL printed/QR-coded on every receipt (app/services/
+    # kra_receipt.py's build_qr_link) — a different host from kra_base_url_* above (that's the
+    # API host the gateway calls; this is the public page a customer's phone scans). Split
+    # sandbox/production the same way, since a sandbox-fiscalized receipt's QR must point at
+    # the sandbox verification host or it won't resolve. Both confirmed working directly
+    # (2026-10-16): sbx against a real sandbox-fiscalized invoice, prod via a user-supplied
+    # real working example.
+    kra_receipt_verification_base_url_prod: str = (
+        "https://etims.kra.go.ke/common/link/etims/receipt/indexEtimsReceiptData"
+    )
+    kra_receipt_verification_base_url_sbx: str = (
+        "https://etims-sbx.kra.go.ke/common/link/etims/receipt/indexEtimsReceiptData"
+    )
     kra_request_timeout_seconds: int = 30
     # Spec §5.1: the source document doesn't print an explicit URL for item-composition save,
     # so the path is a config flag rather than a hardcoded assumption (confirm before go-live).
@@ -72,6 +85,7 @@ class Settings(BaseSettings):
 
     # Polling cadence per resource (spec §11), in seconds.
     kra_poll_interval_codes_seconds: int = 6 * 60 * 60
+    kra_poll_interval_item_classes_seconds: int = 6 * 60 * 60
     kra_poll_interval_notices_seconds: int = 60 * 60
     kra_poll_interval_import_items_seconds: int = 15 * 60
     kra_poll_interval_purchase_sales_seconds: int = 15 * 60
@@ -96,9 +110,61 @@ class Settings(BaseSettings):
     # paying customer. Overridable per-subscription (Subscription.grace_period_days).
     billing_grace_period_days: int = 7
 
+    # --- VSCU integration layer (app/integrations/vscu/) ---
+    # Superseded understanding as of 2026-09-01 (docs/kra_specs/README.md): VSCU is NOT "the
+    # OSCU contract at KRA_BASE_URL_VSCU_*" — kra_base_url_vscu_prod/sbx above encode that
+    # disproven assumption and are no longer used by any VSCU code path. A real VSCU device is
+    # a separate local Spring Boot app (KRA's vscu-v2.0.21.jar) that this gateway calls over
+    # the local network; that local app owns its own auth with real KRA (cmcKey/signKey/
+    # intrlKey never leave it) and proxies upstream itself. So the only VSCU-relevant network
+    # address we ever configure is vscu_base_url, pointed at that local app — never at
+    # etims-api*.kra.go.ke.
+    # Multi-tenant: each client picks OSCU or VSCU independently per branch
+    # (Branch.device_type), and a VSCU device runs on that specific client's own premises —
+    # there is no one "the VSCU host" the way kra_base_url is one host for every OSCU branch.
+    # So vscu_base_url below is only a fallback default (single-tenant/dev, or before a
+    # branch's own VscuDeviceState.base_url is set); the real per-branch address always lives
+    # on VscuDeviceState (app/db/models.py), resolved the same way KraAdapter resolves
+    # kra_base_url_override — see app/integrations/vscu/client.py.
+    vscu_enabled: bool = False
+    vscu_base_url: str = "http://127.0.0.1:8088"
+    vscu_connect_timeout_seconds: float = 10.0
+    vscu_read_timeout_seconds: float = 60.0
+    # Informational only (which upstream KRA env a given branch's local VSCU app is pointed
+    # at, per its own vscu.properties `profile` setting) — this gateway never uses it to build
+    # a URL, and different branches/tenants may legitimately differ.
+    vscu_environment: Literal["sandbox", "production"] = "sandbox"
+    # dvcSrlNo for /initializer/selectInitInfo (2026-09-01, per direct operator confirmation):
+    # unlike OSCU's dvcSrlNo (generate_dvc_srl_no below, a value *we* invent per device), VSCU's
+    # is issued *to us* by KRA — one domain-wide serial number for this integration, not
+    # per-branch and not per-customer. So it belongs here as a single configured value (split
+    # sandbox/production like kra_base_url_vscu_*, since KRA very plausibly issues a distinct
+    # one per environment), not as an admin-supplied field on every device-init request. Still
+    # overridable per-call (VSCUInitializeRequest.dvc_srl_no) for a customer whose VSCU device
+    # was already initialized under a different value before this became a global default.
+    vscu_dvc_srl_no_prod: str = ""
+    vscu_dvc_srl_no_sbx: str = ""
+
+    def vscu_dvc_srl_no_for_env(self) -> str:
+        value = self.vscu_dvc_srl_no_sbx if self.kra_env == "sandbox" else self.vscu_dvc_srl_no_prod
+        if not value:
+            raise ValueError(
+                f"No dvcSrlNo configured for VSCU (vscu_dvc_srl_no_{self.kra_env} is unset) — "
+                "set it, or pass an explicit dvc_srl_no for this device."
+            )
+        return value
+
     @property
     def kra_base_url(self) -> str:
         return self.kra_base_url_sbx if self.kra_env == "sandbox" else self.kra_base_url_prod
+
+    @property
+    def kra_receipt_verification_base_url(self) -> str:
+        return (
+            self.kra_receipt_verification_base_url_sbx
+            if self.kra_env == "sandbox"
+            else self.kra_receipt_verification_base_url_prod
+        )
 
     def kra_base_url_for(self, device_type: str) -> str:
         """Global default host for a device_type, before any per-branch override. Raises if

@@ -126,6 +126,36 @@ async def list_admin_users(db: AsyncSession) -> list[AdminUser]:
     return list(result.scalars().all())
 
 
+async def update_admin_user(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    username: str | None,
+    raw_password: str | None,
+    full_name: str | None,
+) -> AdminUser:
+    """Only fields that are not None are changed. Username uniqueness is re-checked against
+    every other row (not just skipped) — matches create_admin_user's own check.
+    """
+    user = await db.get(AdminUser, user_id)
+    if user is None:
+        raise AdminUserNotFoundError(f"No admin user with id={user_id}")
+
+    if username is not None and username != user.username:
+        existing = await db.scalar(select(AdminUser).where(AdminUser.username == username))
+        if existing is not None:
+            raise UsernameAlreadyExistsError(f"Username {username!r} is already taken")
+        user.username = username
+
+    if raw_password is not None:
+        user.password_hash = hash_password(raw_password)
+
+    if full_name is not None:
+        user.full_name = full_name
+
+    await db.flush()
+    return user
+
+
 async def deactivate_admin_user(db: AsyncSession, user_id: uuid.UUID) -> AdminUser:
     user = await db.get(AdminUser, user_id)
     if user is None:

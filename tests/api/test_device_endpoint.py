@@ -82,6 +82,35 @@ async def test_initialize_success_never_leaks_cmc_key(client, caplog):
         assert plaintext_cmc_key not in record.getMessage()
 
 
+async def test_vscu_device_type_never_calls_real_kra(client):
+    """VSCU has no KRA-hosted registration call at all — decompiling vscu-v2.0.21.jar confirms
+    no /selectInitOsdcInfo-equivalent exists for VSCU (docs/kra_specs/README.md's 2026-09-01
+    correction). A respx.mock with no route registered proves this: the request would fail on
+    an unmocked-request error if the code ever regressed to calling real KRA for VSCU.
+    """
+    admin_key = get_settings().admin_api_key
+    assert admin_key, "ADMIN_API_KEY must be set in the test environment's .env"
+    kra_base_url = get_settings().kra_base_url
+
+    with respx.mock(base_url=kra_base_url, assert_all_called=False):
+        async with client as c:
+            response = await c.post(
+                "/v1/devices/initialize",
+                json={
+                    "branch_code": "MOMBASA-PORT",
+                    "tin": "P051234567X",
+                    "bhf_id": "01",
+                    "device_type": "VSCU",
+                },
+                headers={"X-Admin-Api-Key": admin_key},
+            )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["device_type"] == "VSCU"
+    assert body["dvc_id"] is None
+
+
 async def test_kra_host_returning_404_is_a_clean_502_not_an_unhandled_500(client):
     """Reproduces a real incident: KRA_BASE_URL_SBX pointed at a real device whose
     /selectInitOsdcInfo path 404'd — an HTTP-transport-level failure with no KRA JSON

@@ -12,7 +12,7 @@ import respx
 from httpx import ASGITransport, AsyncClient, Response
 
 from app.core.config import get_settings
-from app.db.models import Client
+from app.db.models import Client, Customer
 from app.db.session import get_db
 from app.main import app
 from app.services import admin_user_auth
@@ -214,8 +214,13 @@ async def test_client_bearer_token_is_rejected_on_admin_routes(client, db_sessio
     as admin auth — proves the "type": "admin" claim check in admin_user_auth, not just that
     an empty/garbage token is rejected.
     """
+    customer = Customer(name="SOME-SAP-CLIENT", allowed_branch_ids=[])
+    db_session.add(customer)
+    await db_session.flush()
     a_client = Client(
-        name="SOME-SAP-CLIENT", client_secret_hash=hash_client_secret("x"), allowed_branch_ids=[]
+        name="SOME-SAP-CLIENT",
+        client_secret_hash=hash_client_secret("x"),
+        customer_id=customer.id,
     )
     db_session.add(a_client)
     await db_session.flush()

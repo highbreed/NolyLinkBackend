@@ -21,10 +21,12 @@ class DeviceInitRequest(BaseModel):
     branch_code: str
     tin: str = Field(max_length=11)
     bhf_id: str = Field(max_length=2)
-    # OSCU and VSCU share the exact same request/response contract — only the host differs.
-    # device_type is purely descriptive (surfaced back for admin/billing visibility);
-    # kra_base_url_override is what actually redirects this branch's calls. Leave both unset
-    # for the common OSCU case, which keeps using the global Settings.kra_base_url.
+    # OSCU vs VSCU are genuinely different downstream (docs/kra_specs/README.md's 2026-09-01
+    # correction) — device_type="VSCU" skips real KRA entirely (no KRA-hosted registration
+    # call exists for VSCU) and creates the Branch row locally instead; see
+    # app/services/cmc_key_manager.py's _register_vscu_branch_locally. kra_base_url_override is
+    # OSCU-only (ignored for VSCU — nothing left to override). Leave both unset for the common
+    # OSCU case, which keeps using the global Settings.kra_base_url.
     device_type: Literal["OSCU", "VSCU"] = "OSCU"
     kra_base_url_override: str | None = None
 

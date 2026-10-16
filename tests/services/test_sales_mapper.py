@@ -3,6 +3,7 @@ highest-stakes logic in the whole gateway (spec §14 calls sales invoices "the f
 so this focuses on multiple tax types on one invoice.
 """
 
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -16,6 +17,10 @@ from app.services.mapping.generic_mapper import (
     map_client_sales_invoice_to_kra,
     map_sales_line,
 )
+
+# No CustomerCodeAllowlist rows are seeded in this file, so any customer_id is unrestricted
+# (see code_allowlist_service.py) — a fixed random id keeps every call site consistent.
+CUSTOMER_ID = uuid.uuid4()
 
 
 @pytest.fixture
@@ -81,7 +86,9 @@ async def test_tax_buckets_split_across_multiple_tax_types(db_session, branch_wi
     ]  # fmt: skip
 
     items = [
-        await map_sales_line(db_session, branch_with_items, line, item_seq=i)
+        await map_sales_line(
+            db_session, branch_with_items, line, item_seq=i, customer_id=CUSTOMER_ID
+        )
         for i, line in enumerate(lines, start=1)
     ]
     buckets = aggregate_tax_buckets(items)
@@ -123,7 +130,9 @@ async def test_two_lines_same_tax_type_sum_into_one_bucket(db_session, branch_wi
     ]  # fmt: skip
 
     items = [
-        await map_sales_line(db_session, branch_with_items, line, item_seq=i)
+        await map_sales_line(
+            db_session, branch_with_items, line, item_seq=i, customer_id=CUSTOMER_ID
+        )
         for i, line in enumerate(lines, start=1)
     ]
     buckets = aggregate_tax_buckets(items)
@@ -142,7 +151,9 @@ async def test_discount_reduces_taxable_amount(db_session, branch_with_items):
         discount_pct=Decimal("10"),
         tax_category="STANDARD16",
     )
-    item = await map_sales_line(db_session, branch_with_items, line, item_seq=1)
+    item = await map_sales_line(
+        db_session, branch_with_items, line, item_seq=1, customer_id=CUSTOMER_ID
+    )
 
     assert item.splyAmt == Decimal("100.00")
     assert item.dcAmt == Decimal("10.00")
@@ -161,7 +172,9 @@ async def test_unregistered_sku_raises(db_session, branch_with_items):
         tax_category="STANDARD16",
     )
     with pytest.raises(CodeLookupError):
-        await map_sales_line(db_session, branch_with_items, line, item_seq=1)
+        await map_sales_line(
+            db_session, branch_with_items, line, item_seq=1, customer_id=CUSTOMER_ID
+        )
 
 
 async def test_map_client_sales_invoice_to_kra_full_flow(db_session, branch_with_items):
@@ -185,7 +198,12 @@ async def test_map_client_sales_invoice_to_kra_full_flow(db_session, branch_with
     )
 
     req = await map_client_sales_invoice_to_kra(
-        db_session, branch_with_items, payload, regr_id="admin", regr_nm="Administrator"
+        db_session,
+        branch_with_items,
+        payload,
+        regr_id="admin",
+        regr_nm="Administrator",
+        customer_id=CUSTOMER_ID,
     )
 
     assert req.trdInvcNo == "SAP-BILLDOC-001"

@@ -2,13 +2,19 @@
 
 import pytest
 
-from app.db.models import Client
+from app.db.models import Client, Customer
 from app.services import idempotency
 
 
 @pytest.fixture
 async def client_id(db_session):
-    client = Client(name="TEST-CLIENT", client_secret_hash="irrelevant", allowed_branch_ids=[])
+    """IdempotencyKey is still keyed by client_id (a connector's own id) — unchanged by the
+    Customer/Client split. Only the paired Customer row needs to exist first.
+    """
+    customer = Customer(name="TEST-CLIENT", allowed_branch_ids=[])
+    db_session.add(customer)
+    await db_session.flush()
+    client = Client(name="TEST-CLIENT", client_secret_hash="irrelevant", customer_id=customer.id)
     db_session.add(client)
     await db_session.flush()
     return client.id

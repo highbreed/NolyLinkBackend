@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.db.models import Branch, Client, Item, Outbox, PurchaseSalesCache
+from app.db.models import Branch, Client, Customer, Item, Outbox, PurchaseSalesCache
 from app.db.session import get_db
 from app.main import app
 from app.services import import_item_service, notice_service, stock_service
@@ -64,10 +64,13 @@ async def branch(db_session) -> Branch:
 
 @pytest.fixture
 async def auth_headers(db_session, branch) -> dict[str, str]:
+    customer = Customer(name="SAP-TEST", allowed_branch_ids=[branch.id])
+    db_session.add(customer)
+    await db_session.flush()
     registered_client = Client(
         name="SAP-TEST",
         client_secret_hash=hash_client_secret("irrelevant"),
-        allowed_branch_ids=[branch.id],
+        customer_id=customer.id,
     )
     db_session.add(registered_client)
     await db_session.flush()

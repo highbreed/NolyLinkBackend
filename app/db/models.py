@@ -33,11 +33,21 @@ class Branch(Base):
     """A KRA-registered (tin, bhfId) device. cmc_key is encrypted at rest via EncryptedString
     (spec §12.2) — reads/writes see the plaintext key; only the DB column holds ciphertext.
 
-    device_type/kra_base_url_override let one gateway instance serve OSCU and VSCU devices
-    side by side — same request/response contract either way, only the host differs.
-    kra_base_url_override is null for the common case (falls back to the global
-    Settings.kra_base_url for that branch's device_type); set per-branch at init time when a
-    branch needs to hit a non-default host.
+    device_type/kra_base_url_override originally assumed OSCU and VSCU devices shared one
+    request/response contract, differing only by host — disproven 2026-09-01
+    (docs/kra_specs/README.md): VSCU is a genuinely different local integration, handled by
+    app/integrations/vscu/ (see VscuDeviceState below), not by kra_base_url_for(). These two
+    columns remain load-bearing for OSCU-only routing (kra_base_url_override still lets an
+    OSCU branch pin a custom host); device_type == "VSCU" should be treated as "route through
+    app/integrations/vscu/", not as an input to kra_base_url_for().
+
+    cmc_key is None for a VSCU branch (2026-09-02, follow-up to the correction above): the
+    decompiled vscu-v2.0.21.jar's confirmed endpoint list has no KRA-hosted registration call
+    at all for VSCU (no /selectInitOsdcInfo-equivalent) — the local VSCU app's own
+    /initializer/selectInitInfo call handles KRA registration internally and strips cmcKey
+    before ever responding to us (see VscuDeviceState's docstring). So
+    app/services/cmc_key_manager.py never calls real KRA to create a VSCU Branch row; it's
+    created locally from admin-supplied (branch_code, tin, bhfId) with no cmcKey to store.
     """
 
     __tablename__ = "branches"
@@ -47,7 +57,7 @@ class Branch(Base):
     branch_code: Mapped[str] = mapped_column(String, unique=True, index=True)
     tin: Mapped[str] = mapped_column(CHAR(11))
     bhf_id: Mapped[str] = mapped_column(CHAR(2))
-    cmc_key: Mapped[str] = mapped_column(EncryptedString)
+    cmc_key: Mapped[str | None] = mapped_column(EncryptedString)
     dvc_id: Mapped[str | None] = mapped_column(String)
     sdc_id: Mapped[str | None] = mapped_column(String)
     mrc_no: Mapped[str | None] = mapped_column(String)
@@ -79,28 +89,92 @@ class AdminUser(Base):
     last_login_at: Mapped[datetime | None] = mapped_column()
 
 
+class Customer(Base):
+    """The paying business we integrate this system for (2026-09-01) — e.g. "Naivas
+    Supermarket". Distinct from Client (below): a Customer is the tenant that owns branch
+    access and billing; a Client is one OAuth2 credential/connector integrating on that
+    Customer's behalf (their SAP instance, their POS vendor's middleware, ...). One Customer
+    can have several Clients (e.g. a prod connector and a staging one, or two different
+    systems both submitting on their behalf) — see Client.customer_id.
+
+    allowed_branch_ids lived on Client before this; it moved here because branch access is a
+    property of the paying business, not of any one connector — every Client under a Customer
+    inherits the same branches and the same billing status (Subscription, below).
+    """
+
+    __tablename__ = "customers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String)
+    allowed_branch_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    clients: Mapped[list["Client"]] = relationship(back_populates="customer")
+
+
+class CustomerCodeAllowlist(Base):
+    """Per-Customer restriction on which KRA reference codes a Client under it may submit
+    (2026-09-18) — an EAV-style join table, not per-classification array columns on Customer,
+    so that "no rows for (customer_id, classification)" is the one unambiguous unrestricted
+    state (every pre-existing Customer stays fully unrestricted with no backfill) and adding a
+    6th restrictable classification later needs no schema change.
+
+    classification is a code_cache_service.CLASSIFICATION_SLUGS key (tax-type/packaging-unit/
+    quantity-unit/nation) or the literal pseudo-slug "item-classification" (item classes have
+    no cd_cls of their own — see KraItemClass). code is the resolved KRA code value (e.g. "B",
+    "NT"), not a friendly name — see app/services/code_allowlist_service.py.
+    """
+
+    __tablename__ = "customer_code_allowlist"
+
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id"), primary_key=True
+    )
+    classification: Mapped[str] = mapped_column(String, primary_key=True)
+    code: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class Client(Base):
-    """An inbound integration client (SAP-PROD, POS-VENDOR-X, ...) — spec §15.
+    """One OAuth2 integration credential/connector (SAP-PROD, POS-VENDOR-X, ...) — spec §15.
+    Belongs to exactly one Customer (the paying business it integrates on behalf of); see
+    Customer's docstring for why branch access and billing live there, not here.
 
     id doubles as the OAuth2 client_id sent to POST /oauth/token (spec §15's
     client-credentials grant); client_secret_hash is that flow's client_secret, hashed.
+
+    revoked_at (2026-10-15) is a soft-revoke, not a delete: IdempotencyKey.client_id is a real
+    FK to this table (spec §13's dedup record), and a revoked connector may have genuine fiscal
+    history behind it — hard-deleting the row would either violate that FK or force deleting
+    idempotency records that exist specifically to prevent a duplicate KRA submission. A
+    revoked client's existing JWTs are rejected by client_auth.get_current_client the moment
+    this is set, same as an unknown/invalid token (401) — not distinguished in the response, so
+    a caller can't tell "revoked" from "never existed".
     """
 
     __tablename__ = "clients"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id"), index=True
+    )
     name: Mapped[str] = mapped_column(String)
     client_secret_hash: Mapped[str] = mapped_column(String)
-    allowed_branch_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    revoked_at: Mapped[datetime | None] = mapped_column()
+
+    customer: Mapped["Customer"] = relationship(back_populates="clients")
 
 
 class Subscription(Base):
-    """Per-client billing subscription — this gateway's own tenant billing, entirely outside
+    """Per-customer billing subscription — this gateway's own tenant billing, entirely outside
     the KRA spec. Internal tracking only: an admin (app/api/v1/endpoints/billing.py) sets
     current_period_end/status directly; there is no payment processor integration (same
     "don't fabricate an integration without real credentials" policy this build followed for
     KRA sandbox access all along).
+
+    Keyed by customer_id (2026-09-01, moved from client_id): billing is a property of the
+    paying business, not of any one of its connectors — see Customer's docstring.
 
     status is only ACTIVE/SUSPENDED/CANCELLED — "lapsed but within grace period" is computed
     at request time from current_period_end + grace_period_days
@@ -111,8 +185,8 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    client_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("clients.id"), unique=True, index=True
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id"), unique=True, index=True
     )
     plan_name: Mapped[str] = mapped_column(String, default="STANDARD", server_default="STANDARD")
     status: Mapped[str] = mapped_column(String, default="ACTIVE", server_default="ACTIVE")
@@ -128,15 +202,16 @@ class Subscription(Base):
 
 
 class Invoice(Base):
-    """One billing-period invoice for a client. Internal record only — see Subscription's
-    docstring on payment-processor scope.
+    """One billing-period invoice for a customer. Internal record only — see Subscription's
+    docstring on payment-processor scope and on why this is keyed by customer_id, not
+    client_id.
     """
 
     __tablename__ = "invoices"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    client_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("clients.id"), index=True
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id"), index=True
     )
     period_start: Mapped[datetime] = mapped_column()
     period_end: Mapped[datetime] = mapped_column()
@@ -205,6 +280,26 @@ class SalesInvoiceSequence(Base):
     next_seq: Mapped[int] = mapped_column(default=1, server_default="1")
 
 
+class KraCodeClassification(Base):
+    """The real name KRA gives each cd_cls (e.g. "Tax Type" for cd_cls="04") — spec §6.2's
+    CodeClass.cdClsNm/cdClsDesc (OSCU) / CodeClassLVO.cdClsNm/cdClsDesc (VSCU), which is a
+    property of the classification itself, not of any one code within it (see KraCodeList
+    below), so it's a separate small table rather than a column repeated on every code row.
+
+    Added 2026-09-18 after seeding real data revealed several cd_cls values (e.g. "36" = bank
+    list, "45" = KRA station list) that code_cache_service.CLASSIFICATION_SLUGS — built from
+    the spec's own partial table — has no friendly slug for. KRA was supplying their real names
+    all along via cdClsNm; earlier syncs just discarded it. This is that name, not a guess.
+    """
+
+    __tablename__ = "kra_code_classifications"
+
+    cd_cls: Mapped[str] = mapped_column(String, primary_key=True)
+    cd_cls_nm: Mapped[str | None] = mapped_column(String)
+    cd_cls_desc: Mapped[str | None] = mapped_column(String)
+    refreshed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class KraCodeList(Base):
     """Cached KRA code table rows, refreshed via /selectCodeList (spec §7, §11)."""
 
@@ -215,6 +310,25 @@ class KraCodeList(Base):
     cd_nm: Mapped[str | None] = mapped_column(String)
     cd_desc: Mapped[str | None] = mapped_column(String)
     srt_ord: Mapped[int | None] = mapped_column()
+    use_yn: Mapped[str | None] = mapped_column(CHAR(1))
+    refreshed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class KraItemClass(Base):
+    """Cached item-classification rows from /selectItemClsList (OSCU, spec §6.3) and VSCU's
+    /itemClass/selectItemsClass — see app/services/item_class_cache_service.py. Unlike
+    KraCodeList this has no cd_cls: item classes aren't one of the numbered classifications
+    /selectCodeList serves, they're their own KRA resource, so this is keyed directly by
+    item_cls_cd instead of a (cd_cls, cd) composite.
+    """
+
+    __tablename__ = "kra_item_classes"
+
+    item_cls_cd: Mapped[str] = mapped_column(String, primary_key=True)
+    item_cls_nm: Mapped[str | None] = mapped_column(String)
+    item_cls_lvl: Mapped[str | None] = mapped_column(String)
+    tax_ty_cd: Mapped[str | None] = mapped_column(String)
+    mjr_tg_yn: Mapped[str | None] = mapped_column(CHAR(1))
     use_yn: Mapped[str | None] = mapped_column(CHAR(1))
     refreshed_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -288,15 +402,98 @@ class KraCallLog(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class VscuDeviceState(Base):
+    """Operational state AND connection config for a branch's local VSCU device
+    (app/integrations/vscu/), one row per branch. This is a multi-tenant system — every client
+    picks OSCU or VSCU independently per branch (Branch.device_type), and unlike OSCU (one KRA
+    host shared by everyone), a VSCU device runs on *that specific client's own premises/
+    network*, so base_url is per-branch config here, not a global Settings value (mirrors
+    Branch.kra_base_url_override's per-branch precedent for OSCU). Settings.vscu_base_url is
+    only a fallback default for single-tenant/dev use, never assumed correct for a real client.
+
+    Deliberately excludes cmcKey/signKey/intrlKey — those never leave the local VSCU app
+    (confirmed by decompiling InitializeVsdcExcute.selectInitInfo, which strips them from its
+    own response before we ever see it). VSCU's local H2 store remains the authoritative
+    sequence owner; last_known_* here is a cache for our own visibility/audit, never a source
+    of truth to submit against.
+    """
+
+    __tablename__ = "vscu_device_state"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), unique=True, index=True
+    )
+    # This branch's local VSCU app, e.g. "http://192.168.1.10:8088" — required; every VSCU
+    # branch lives on a different client's network, so there is no sane shared default.
+    base_url: Mapped[str] = mapped_column(String)
+    # None falls back to Settings.vscu_connect/read_timeout_seconds. Per-branch override exists
+    # because a client's own network/VSCU hardware may need different timeouts than the norm.
+    connect_timeout_seconds: Mapped[float | None] = mapped_column()
+    read_timeout_seconds: Mapped[float | None] = mapped_column()
+    dvc_srl_no: Mapped[str | None] = mapped_column(String)
+    sdc_id: Mapped[str | None] = mapped_column(String)
+    mrc_no: Mapped[str | None] = mapped_column(String)
+    dvc_id: Mapped[str | None] = mapped_column(String)
+    vat_ty_cd: Mapped[str | None] = mapped_column(String)
+    taxpr_nm: Mapped[str | None] = mapped_column(String)
+    bhf_nm: Mapped[str | None] = mapped_column(String)
+    initialized_at: Mapped[datetime | None] = mapped_column()
+    last_sequence_sync_at: Mapped[datetime | None] = mapped_column()
+    last_known_invc_no: Mapped[int | None] = mapped_column(BigInteger)
+    last_known_sale_rcpt_no: Mapped[int | None] = mapped_column(BigInteger)
+    last_successful_call_at: Mapped[datetime | None] = mapped_column()
+    last_error: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class VscuCallLog(Base):
+    """Audit log of every local-VSCU-app call — mirrors KraCallLog's shape/intent but is kept
+    separate since VSCU is a distinct downstream system with its own endpoint/result-code
+    space (app/integrations/vscu/constants.py), not a KRA host. Never logs the raw payload
+    (may carry receipt signature/internal data) — only its hash, per the same rule KraCallLog
+    follows for cmcKey.
+    """
+
+    __tablename__ = "vscu_call_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), index=True
+    )
+    correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), default=uuid.uuid4)
+    endpoint: Mapped[str] = mapped_column(String)
+    request_hash: Mapped[str] = mapped_column(String)
+    result_cd: Mapped[str | None] = mapped_column(String)
+    result_msg: Mapped[str | None] = mapped_column(String)
+    result_dt: Mapped[str | None] = mapped_column(String)
+    http_status: Mapped[int | None] = mapped_column()
+    latency_ms: Mapped[int | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class SalesInvoice(Base):
     """Fiscal receipt record — rcpt_sign/intrl_data/etc. must be immutable once written.
     See spec §19.
+
+    transaction_kind ("SALE" or "CREDIT_NOTE", 2026-09-01) exists because a credit note is a
+    genuinely separate fiscal transaction referencing an original sale via kra_invc_no's
+    counterpart (orgInvcNo on the wire), not a mutation of it — see
+    app/schemas/client/credit_note_in.py's module docstring. It's tracked under its own
+    idempotency endpoint namespace ("/v1/sales-invoices/credit-notes"), but without this
+    column a client reusing the same external_ref string for an unrelated sale and credit note
+    on the same branch would still collide on this table's own uniqueness, even though the
+    idempotency layer treats them as different operations.
     """
 
     __tablename__ = "sales_invoices"
     __table_args__ = (
         UniqueConstraint(
-            "branch_id", "external_ref", name="uq_sales_invoices_branch_id_external_ref"
+            "branch_id",
+            "external_ref",
+            "transaction_kind",
+            name="uq_sales_invoices_branch_id_external_ref_transaction_kind",
         ),
     )
 
@@ -305,12 +502,26 @@ class SalesInvoice(Base):
         UUID(as_uuid=True), ForeignKey("branches.id"), index=True
     )
     external_ref: Mapped[str] = mapped_column(String)
+    transaction_kind: Mapped[str] = mapped_column(String, default="SALE", server_default="SALE")
+    # Set only for transaction_kind="CREDIT_NOTE" — the original sale's own external_ref, for
+    # audit trail (e.g. "list every credit note issued against invoice X"). Deliberately a
+    # plain string, not a FK to this same table's id: it's set from the client-supplied
+    # original_invoice_ref before the original row's id is looked up at all in some paths, and
+    # a string keeps this column meaningful even if the original row is ever purged.
+    original_ref: Mapped[str | None] = mapped_column(String)
     kra_invc_no: Mapped[int | None] = mapped_column(BigInteger)
     kra_cur_rcpt_no: Mapped[int | None] = mapped_column(BigInteger)
     kra_tot_rcpt_no: Mapped[int | None] = mapped_column(BigInteger)
     kra_rcpt_sign: Mapped[str | None] = mapped_column(String)
     kra_intrl_data: Mapped[str | None] = mapped_column(String)
     kra_sdc_datetime: Mapped[str | None] = mapped_column(String)
+    # The receipt's "CU ID" (TIS-OSCU-VSCU-v2.0 spec §6.23.3, e.g. "KRACU0300004030") —
+    # required on the printed receipt alongside the "CU Invoice Number" (§6.23.4: CU ID + "/" +
+    # kra_cur_rcpt_no), which app/api/v1/endpoints/sales.py computes from this rather than
+    # storing separately. VSCU's /trnsSales/saveSales response carries sdcId directly (captured
+    # here at write time); OSCU's doesn't, so the OSCU write path uses the branch's own
+    # Branch.sdc_id (set once at device init, not per-transaction) instead.
+    kra_sdc_id: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="PENDING", server_default="PENDING")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

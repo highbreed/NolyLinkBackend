@@ -11,7 +11,15 @@ from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.db.models import Branch, Client, IdempotencyKey, Item, KraCodeList
+from app.db.models import (
+    Branch,
+    Client,
+    Customer,
+    CustomerCodeAllowlist,
+    IdempotencyKey,
+    Item,
+    KraCodeList,
+)
 from app.db.session import get_db
 from app.main import app
 from app.services import idempotency
@@ -34,7 +42,13 @@ def api_client(db_session):
 
 @pytest.fixture
 async def branch(db_session) -> Branch:
-    b = Branch(branch_code="NAIROBI-HQ", tin="A123456789Z", bhf_id="00", cmc_key="c" * 10)
+    b = Branch(
+        branch_code="NAIROBI-HQ",
+        tin="A123456789Z",
+        bhf_id="00",
+        cmc_key="c" * 10,
+        sdc_id="KRACU0300004030",
+    )
     db_session.add(b)
     db_session.add(
         Item(
@@ -56,10 +70,13 @@ async def branch(db_session) -> Branch:
 
 @pytest.fixture
 async def registered_client(db_session, branch) -> Client:
+    customer = Customer(name="SAP-TEST", allowed_branch_ids=[branch.id])
+    db_session.add(customer)
+    await db_session.flush()
     client = Client(
         name="SAP-TEST",
         client_secret_hash=hash_client_secret("irrelevant"),
-        allowed_branch_ids=[branch.id],
+        customer_id=customer.id,
     )
     db_session.add(client)
     await db_session.flush()
@@ -120,7 +137,46 @@ async def test_submit_sales_invoice_returns_receipt(api_client, branch, auth_hea
     body = response.json()
     assert body["status"] == "FISCALIZED"
     assert body["kra_cur_rcpt_no"] == 1
-    assert body["kra_rcpt_sign"] == "2" * 16
+    assert body["kra_rcpt_sign"] == "2222-2222-2222-2222"
+    assert body["kra_intrl_data"] == "1111-1111-1111-1111-1111-1111-11"
+    assert body["qrcode_link"] == (
+        "https://etims-sbx.kra.go.ke/common/link/etims/receipt/"
+        "indexEtimsReceiptData?Data=A123456789Z00" + "2" * 16
+    )
+    assert body["kra_sdc_id"] == "KRACU0300004030"
+    assert body["kra_cu_invoice_no"] == "KRACU0300004030/1"
+    assert body["scu_information"] == {
+        "date": "26/02/2020 14:31:24",
+        "control_unit_number": "KRACU0300004030",
+        "invoice_number": "KRACU0300004030/1",
+        "internal_data": "1111-1111-1111-1111-1111-1111-11",
+        "receipt_signature": "2222-2222-2222-2222",
+        "receipt_number": 1,
+    }
+
+
+async def test_sales_line_tax_category_rejected_by_customer_code_allowlist(
+    api_client, db_session, branch, registered_client
+):
+    """The registered item's own tax_ty_cd ("B") was never allow-list checked (it predates the
+    allow-list existing), but the sales line's tax_category is independently client-supplied —
+    see generic_mapper.map_sales_line's comment on why this needs its own allow-list check
+    rather than trusting the item's stored value.
+    """
+    db_session.add(
+        CustomerCodeAllowlist(
+            customer_id=registered_client.customer_id, classification="tax-type", code="A"
+        )
+    )
+    await db_session.flush()
+
+    async with api_client as c:
+        response = await c.post(
+            "/v1/sales-invoices",
+            json=INVOICE_PAYLOAD,
+            headers=bearer_header(registered_client),
+        )
+    assert response.status_code == 422
 
 
 async def test_resubmitting_same_external_ref_does_not_call_kra_again(
@@ -155,7 +211,7 @@ async def test_get_sales_invoice_after_submission(api_client, branch, auth_heade
             )
 
     assert response.status_code == 200
-    assert response.json()["kra_rcpt_sign"] == "2" * 16
+    assert response.json()["kra_rcpt_sign"] == "2222-2222-2222-2222"
 
 
 async def test_get_unknown_external_ref_is_404(api_client, branch, auth_headers):
@@ -243,3 +299,52 @@ async def test_concurrent_submission_of_same_external_ref_is_409(
         response = await c.post("/v1/sales-invoices", json=payload, headers=auth_headers)
 
     assert response.status_code == 409
+
+
+async def test_submit_credit_note_references_original_sale(
+    api_client, branch, auth_headers, db_session
+):
+    """POST /v1/sales-invoices/credit-notes for an OSCU branch — the same endpoint family
+    the VSCU-branch test in tests/api/test_vscu_sales_endpoint.py exercises, confirming both
+    providers share this contract per KRA_OSCU_FastAPI_Integration_Spec.md §7's code
+    catalogue (canonical for both — see app/schemas/client/credit_note_in.py).
+    """
+    db_session.add(KraCodeList(cd_cls="32", cd="06", cd_nm="Refund"))
+    await db_session.flush()
+
+    kra_base_url = get_settings().kra_base_url
+    with respx.mock(base_url=kra_base_url) as mock:
+        mock.post("/saveTrnsSalesOsdc").mock(return_value=Response(200, json=sales_envelope()))
+        async with api_client as c:
+            sale_response = await c.post(
+                "/v1/sales-invoices", json=INVOICE_PAYLOAD, headers=auth_headers
+            )
+            assert sale_response.status_code == 201
+
+            credit_note_payload = {
+                "branch_code": "NAIROBI-HQ",
+                "external_invoice_ref": "CN-001",
+                "original_invoice_ref": "SAP-BILLDOC-001",
+                "reason": "Refund",
+                "customer_pin": "P123456789A",
+                "customer_name": "John Customer",
+                "lines": [
+                    {
+                        "sku": "BREAD",
+                        "description": "Bread",
+                        "quantity": "2",
+                        "unit_of_measure": "BA",
+                        "unit_price": "100.00",
+                        "tax_category": "STANDARD16",
+                    }
+                ],
+            }
+            cn_response = await c.post(
+                "/v1/sales-invoices/credit-notes", json=credit_note_payload, headers=auth_headers
+            )
+
+    assert cn_response.status_code == 201
+    body = cn_response.json()
+    assert body["transaction_kind"] == "CREDIT_NOTE"
+    assert body["original_ref"] == "SAP-BILLDOC-001"
+    assert body["status"] == "FISCALIZED"

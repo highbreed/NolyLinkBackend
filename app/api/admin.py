@@ -100,6 +100,35 @@ async def list_users(db: AsyncSession = Depends(get_db)) -> list[AdminUserOut]:
     return [_to_out(u) for u in users]
 
 
+class AdminUserUpdateRequest(BaseModel):
+    username: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=72)
+    full_name: str | None = None
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserOut)
+async def update_user(
+    user_id: uuid.UUID,
+    payload: AdminUserUpdateRequest,
+    admin_actor: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminUserOut:
+    try:
+        user = await admin_user_auth.update_admin_user(
+            db, user_id, payload.username, payload.password, payload.full_name
+        )
+        await db.commit()
+    except admin_user_auth.AdminUserNotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except admin_user_auth.UsernameAlreadyExistsError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    logger.info("Admin user %s updated by %s", user_id, admin_actor)
+    return _to_out(user)
+
+
 @router.post("/users/{user_id}/deactivate", response_model=AdminUserOut)
 async def deactivate_user(
     user_id: uuid.UUID,

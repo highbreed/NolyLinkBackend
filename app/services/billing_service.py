@@ -1,6 +1,11 @@
-"""Client subscription/invoice management and access enforcement — this gateway's own tenant
-billing, entirely outside the KRA spec (which has no concept of "client" at all; that's this
-project's own multi-tenant layer from Phase 9).
+"""Customer subscription/invoice management and access enforcement — this gateway's own
+tenant billing, entirely outside the KRA spec (which has no concept of "customer" at all;
+that's this project's own multi-tenant layer from Phase 9).
+
+Keyed by customer_id, not client_id (2026-09-01): billing is a property of the paying
+business (Customer), not of any one of its OAuth2 connectors (Client) — see Customer's
+docstring in app/db/models.py. A Customer with several Clients is billed once, not per
+connector.
 
 Internal tracking only: nothing here calls a payment processor. An admin marks invoices paid
 and subscriptions suspended/reactivated directly via app/api/v1/endpoints/billing.py. Wiring
@@ -17,11 +22,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.db.models import Client, Invoice, Subscription
-
-
-class ClientNotFoundError(Exception):
-    pass
+from app.db.models import Customer, Invoice, Subscription
+from app.services.customer_service import CustomerNotFoundError as CustomerNotFoundError
 
 
 class SubscriptionNotFoundError(Exception):
@@ -46,16 +48,16 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
-async def get_subscription(db: AsyncSession, client_id: uuid.UUID) -> Subscription | None:
+async def get_subscription(db: AsyncSession, customer_id: uuid.UUID) -> Subscription | None:
     result: Subscription | None = await db.scalar(
-        select(Subscription).where(Subscription.client_id == client_id)
+        select(Subscription).where(Subscription.customer_id == customer_id)
     )
     return result
 
 
 async def upsert_subscription(
     db: AsyncSession,
-    client_id: uuid.UUID,
+    customer_id: uuid.UUID,
     plan_name: str,
     current_period_end: datetime,
     grace_period_days: int | None,
@@ -66,12 +68,12 @@ async def upsert_subscription(
     never silently lift an explicit SUSPENDED/CANCELLED (use reactivate_subscription for
     that), since a payment landing for the wrong reason shouldn't undo a fraud suspension.
     """
-    if await db.get(Client, client_id) is None:
-        raise ClientNotFoundError(f"No client with id={client_id}")
+    if await db.get(Customer, customer_id) is None:
+        raise CustomerNotFoundError(f"No customer with id={customer_id}")
 
     current_period_end = _as_utc(current_period_end)
 
-    existing = await get_subscription(db, client_id)
+    existing = await get_subscription(db, customer_id)
     if existing is not None:
         existing.plan_name = plan_name
         existing.current_period_end = current_period_end
@@ -80,7 +82,7 @@ async def upsert_subscription(
         return existing
 
     subscription = Subscription(
-        client_id=client_id,
+        customer_id=customer_id,
         plan_name=plan_name,
         current_period_end=current_period_end,
         grace_period_days=grace_period_days,
@@ -90,10 +92,12 @@ async def upsert_subscription(
     return subscription
 
 
-async def suspend_subscription(db: AsyncSession, client_id: uuid.UUID, reason: str) -> Subscription:
-    subscription = await get_subscription(db, client_id)
+async def suspend_subscription(
+    db: AsyncSession, customer_id: uuid.UUID, reason: str
+) -> Subscription:
+    subscription = await get_subscription(db, customer_id)
     if subscription is None:
-        raise SubscriptionNotFoundError(f"No subscription on file for client_id={client_id}")
+        raise SubscriptionNotFoundError(f"No subscription on file for customer_id={customer_id}")
     subscription.status = "SUSPENDED"
     subscription.suspended_at = datetime.now(UTC)
     subscription.suspended_reason = reason
@@ -101,10 +105,10 @@ async def suspend_subscription(db: AsyncSession, client_id: uuid.UUID, reason: s
     return subscription
 
 
-async def reactivate_subscription(db: AsyncSession, client_id: uuid.UUID) -> Subscription:
-    subscription = await get_subscription(db, client_id)
+async def reactivate_subscription(db: AsyncSession, customer_id: uuid.UUID) -> Subscription:
+    subscription = await get_subscription(db, customer_id)
     if subscription is None:
-        raise SubscriptionNotFoundError(f"No subscription on file for client_id={client_id}")
+        raise SubscriptionNotFoundError(f"No subscription on file for customer_id={customer_id}")
     subscription.status = "ACTIVE"
     subscription.suspended_at = None
     subscription.suspended_reason = None
@@ -112,10 +116,10 @@ async def reactivate_subscription(db: AsyncSession, client_id: uuid.UUID) -> Sub
     return subscription
 
 
-async def cancel_subscription(db: AsyncSession, client_id: uuid.UUID) -> Subscription:
-    subscription = await get_subscription(db, client_id)
+async def cancel_subscription(db: AsyncSession, customer_id: uuid.UUID) -> Subscription:
+    subscription = await get_subscription(db, customer_id)
     if subscription is None:
-        raise SubscriptionNotFoundError(f"No subscription on file for client_id={client_id}")
+        raise SubscriptionNotFoundError(f"No subscription on file for customer_id={customer_id}")
     subscription.status = "CANCELLED"
     await db.flush()
     return subscription
@@ -123,18 +127,18 @@ async def cancel_subscription(db: AsyncSession, client_id: uuid.UUID) -> Subscri
 
 async def create_invoice(
     db: AsyncSession,
-    client_id: uuid.UUID,
+    customer_id: uuid.UUID,
     period_start: datetime,
     period_end: datetime,
     amount: Decimal,
     currency: str,
     notes: str | None,
 ) -> Invoice:
-    if await db.get(Client, client_id) is None:
-        raise ClientNotFoundError(f"No client with id={client_id}")
+    if await db.get(Customer, customer_id) is None:
+        raise CustomerNotFoundError(f"No customer with id={customer_id}")
 
     invoice = Invoice(
-        client_id=client_id,
+        customer_id=customer_id,
         period_start=_as_utc(period_start),
         period_end=_as_utc(period_end),
         amount=amount,
@@ -146,9 +150,9 @@ async def create_invoice(
     return invoice
 
 
-async def list_invoices(db: AsyncSession, client_id: uuid.UUID) -> list[Invoice]:
+async def list_invoices(db: AsyncSession, customer_id: uuid.UUID) -> list[Invoice]:
     result = await db.execute(
-        select(Invoice).where(Invoice.client_id == client_id).order_by(Invoice.issued_at.desc())
+        select(Invoice).where(Invoice.customer_id == customer_id).order_by(Invoice.issued_at.desc())
     )
     return list(result.scalars().all())
 
@@ -168,7 +172,7 @@ async def mark_invoice_paid(
     invoice.paid_at = datetime.now(UTC)
 
     if extend_subscription_to is not None:
-        subscription = await get_subscription(db, invoice.client_id)
+        subscription = await get_subscription(db, invoice.customer_id)
         if subscription is not None:
             subscription.current_period_end = _as_utc(extend_subscription_to)
 
@@ -177,12 +181,13 @@ async def mark_invoice_paid(
 
 
 async def enforce_active_subscription(
-    db: AsyncSession, client: Client, settings: Settings | None = None
+    db: AsyncSession, customer: Customer, settings: Settings | None = None
 ) -> None:
-    """Called from client_auth.get_current_client on every authenticated request. A no-op
-    (billing_enforcement_enabled defaults False) until ops has backfilled Subscription rows
-    for every existing client and deliberately turns this on — otherwise every already-onboarded
-    client would be locked out the moment this shipped, with no subscription row to check.
+    """Called from client_auth.get_current_client (via client.customer) on every authenticated
+    request. A no-op (billing_enforcement_enabled defaults False) until ops has backfilled
+    Subscription rows for every existing customer and deliberately turns this on — otherwise
+    every already-onboarded customer would be locked out the moment this shipped, with no
+    subscription row to check.
 
     Once enabled: no subscription on file, SUSPENDED, CANCELLED, or past
     current_period_end + grace_period_days all raise SubscriptionBlockedError -> HTTP 402.
@@ -191,19 +196,19 @@ async def enforce_active_subscription(
     if not settings.billing_enforcement_enabled:
         return
 
-    subscription = await get_subscription(db, client.id)
+    subscription = await get_subscription(db, customer.id)
     if subscription is None:
         raise SubscriptionBlockedError(
-            f"Client {client.name!r} has no billing subscription on file"
+            f"Customer {customer.name!r} has no billing subscription on file"
         )
 
     if subscription.status == "CANCELLED":
-        raise SubscriptionBlockedError(f"Client {client.name!r}'s subscription is cancelled")
+        raise SubscriptionBlockedError(f"Customer {customer.name!r}'s subscription is cancelled")
 
     if subscription.status == "SUSPENDED":
         reason = subscription.suspended_reason or "payment overdue"
         raise SubscriptionBlockedError(
-            f"Client {client.name!r}'s subscription is suspended: {reason}"
+            f"Customer {customer.name!r}'s subscription is suspended: {reason}"
         )
 
     grace_days = (
@@ -214,7 +219,7 @@ async def enforce_active_subscription(
     grace_deadline = subscription.current_period_end + timedelta(days=grace_days)
     if datetime.now(UTC) > grace_deadline:
         raise SubscriptionBlockedError(
-            f"Client {client.name!r}'s subscription lapsed on "
+            f"Customer {customer.name!r}'s subscription lapsed on "
             f"{subscription.current_period_end.date()} and its {grace_days}-day grace period "
             "has ended"
         )

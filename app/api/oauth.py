@@ -44,7 +44,11 @@ async def issue_token(
         ) from None
 
     client = await db.get(Client, client_uuid)
-    if client is None or client.client_secret_hash != hash_client_secret(client_secret):
+    if (
+        client is None
+        or client.client_secret_hash != hash_client_secret(client_secret)
+        or client.revoked_at is not None
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_client")
 
     settings = get_settings()

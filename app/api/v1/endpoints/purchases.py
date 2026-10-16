@@ -1,6 +1,11 @@
 """GET /v1/purchases/pending, POST /v1/purchases (spec §18) — outbox pattern (spec §14):
 POST writes the Purchase business record and its outbox row in the same transaction and
 returns 202 Accepted immediately.
+
+GET /pending needs no protocol dispatch: PurchaseSalesCache is the same table regardless of
+device_type (app/services/vscu_purchase_service.py reuses it as-is), so purchase_service's
+read here already works transparently for VSCU branches. POST dispatches by device_type,
+same pattern as app/api/v1/endpoints/sales.py — the OSCU path below is unchanged.
 """
 
 from decimal import Decimal
@@ -13,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Client, Purchase, PurchaseSalesCache
 from app.db.session import get_db
 from app.schemas.client.purchase_in import ClientPurchaseIn
-from app.services import purchase_service
+from app.services import purchase_service, vscu_purchase_service
 from app.services.client_auth import get_authorized_branch
 from app.services.rate_limit import enforce_rate_limit
 
@@ -65,9 +70,18 @@ async def submit_purchase(
     branch = await get_authorized_branch(db, client, payload.branch_code)
 
     try:
-        purchase: Purchase = await purchase_service.submit_purchase(db, branch, payload)
-    except purchase_service.PendingPurchaseNotFound as exc:
+        purchase: Purchase = (
+            await vscu_purchase_service.submit_purchase(db, branch, payload)
+            if branch.device_type == "VSCU"
+            else await purchase_service.submit_purchase(db, branch, payload)
+        )
+    except (
+        purchase_service.PendingPurchaseNotFound,
+        vscu_purchase_service.PendingPurchaseNotFound,
+    ) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except vscu_purchase_service.InvalidExternalRef as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     await db.commit()
     return PurchaseOut(

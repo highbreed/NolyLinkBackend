@@ -19,6 +19,7 @@ from app.db.session import AsyncSessionLocal
 from app.services import (
     code_cache_service,
     import_item_service,
+    item_class_cache_service,
     notice_service,
     purchase_service,
     stock_service,
@@ -63,6 +64,14 @@ async def _refresh_code_lists_for_all_branches(
     await _refresh_for_all_branches(code_cache_service.refresh_code_list, "codes", session_factory)
 
 
+async def _refresh_item_classes_for_all_branches(
+    session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
+) -> None:
+    await _refresh_for_all_branches(
+        item_class_cache_service.refresh_item_classes, "item_classes", session_factory
+    )
+
+
 async def _refresh_import_items_for_all_branches(
     session_factory: async_sessionmaker[AsyncSession] = AsyncSessionLocal,
 ) -> None:
@@ -96,6 +105,11 @@ async def _refresh_notices_for_all_branches(
 @celery_app.task(name="poller.refresh_code_lists")  # type: ignore[untyped-decorator]
 def refresh_code_lists() -> None:
     asyncio.run(_refresh_code_lists_for_all_branches())
+
+
+@celery_app.task(name="poller.refresh_item_classes")  # type: ignore[untyped-decorator]
+def refresh_item_classes() -> None:
+    asyncio.run(_refresh_item_classes_for_all_branches())
 
 
 @celery_app.task(name="poller.refresh_import_items")  # type: ignore[untyped-decorator]

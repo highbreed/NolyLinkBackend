@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.db.models import (
     Branch,
     Client,
+    Customer,
     IdempotencyKey,
     Item,
     KraCallLog,
@@ -36,19 +37,37 @@ async def test_branch_round_trip(db_session):
     assert fetched.created_at is not None
 
 
+async def test_customer_round_trip(db_session):
+    branch_id = uuid.uuid4()
+    customer = Customer(name="ACME-RETAIL", allowed_branch_ids=[branch_id])
+    db_session.add(customer)
+    await db_session.flush()
+
+    fetched = await db_session.get(Customer, customer.id)
+    assert fetched is not None
+    assert fetched.name == "ACME-RETAIL"
+    assert fetched.allowed_branch_ids == [branch_id]
+    assert fetched.created_at is not None
+
+
 async def test_client_round_trip(db_session):
     branch_id = uuid.uuid4()
+    customer = Customer(name="SAP-PROD", allowed_branch_ids=[branch_id])
+    db_session.add(customer)
+    await db_session.flush()
+
     client = Client(
         name="SAP-PROD",
         client_secret_hash="hashed-key",
-        allowed_branch_ids=[branch_id],
+        customer_id=customer.id,
     )
     db_session.add(client)
     await db_session.flush()
 
     fetched = await db_session.get(Client, client.id)
     assert fetched is not None
-    assert fetched.allowed_branch_ids == [branch_id]
+    assert fetched.customer_id == customer.id
+    assert fetched.name == "SAP-PROD"
 
 
 async def test_item_round_trip_and_branch_relationship(db_session):
@@ -101,7 +120,10 @@ async def test_kra_sync_state_round_trip(db_session):
 
 
 async def test_idempotency_key_round_trip(db_session):
-    client = Client(name="POS-VENDOR-X", client_secret_hash="hash", allowed_branch_ids=[])
+    customer = Customer(name="POS-VENDOR-X", allowed_branch_ids=[])
+    db_session.add(customer)
+    await db_session.flush()
+    client = Client(name="POS-VENDOR-X", client_secret_hash="hash", customer_id=customer.id)
     db_session.add(client)
     await db_session.flush()
 

@@ -13,8 +13,8 @@ token endpoint and a Prometheus scrape target).
 
 | Scheme | Header | Used by |
 |---|---|---|
-| **Client bearer (JWT)** | `Authorization: Bearer <token>` | Every `/v1/*` endpoint except `/v1/health` and `/v1/devices/*` |
-| **Admin key** | `X-Admin-Api-Key: <key>` | `/v1/devices/initialize`, all of `/v1/billing/*`, all of `/admin/*` except `/admin/login` itself |
+| **Client bearer (JWT)** | `Authorization: Bearer <token>` | Every `/v1/*` endpoint except `/v1/health` and `/v1/devices/*` — includes `/v1/monitoring/*` (a Customer's own connector can view its own activity, see [Monitoring](#client--monitoring)) |
+| **Admin key** | `X-Admin-Api-Key: <key>` | `/v1/devices/initialize`, all of `/v1/customers/*`, `/v1/admin/*`, `/v1/billing/*`, all of `/admin/*` except `/admin/login` itself |
 | **Admin bearer (JWT)** | `Authorization: Bearer <token>` | Same routes as the admin key — either credential grants identical access, see [Admin Login](#admin-portal-login) |
 | **None** | — | `/oauth/token`, `/admin/login` (the grant exchanges themselves), `/v1/health`, `/metrics` |
 
@@ -56,8 +56,8 @@ OAuth2 client-credentials grant (RFC 6749 §4.4). Unversioned, matching standard
 | Field | Type | Notes |
 |---|---|---|
 | `grant_type` | string | Must be `client_credentials` |
-| `client_id` | string (UUID) | Issued at client onboarding — see [Billing](#admin--billing) and the onboarding doc |
-| `client_secret` | string | The raw secret issued at onboarding (only its sha256 hash is stored server-side) |
+| `client_id` | string (UUID) | Issued by `POST /v1/customers/{customer_id}/connectors` — see [Customer Onboarding](#admin--customer-onboarding) |
+| `client_secret` | string | The raw secret returned once by that same call (only its sha256 hash is stored server-side) |
 
 **Response** `200`:
 ```json
@@ -147,8 +147,8 @@ encrypted at rest, and creates the `branches` row every other endpoint reference
 | `branch_code` | string | Your internal identifier — chosen by you, not KRA |
 | `tin` | string, ≤11 | Taxpayer PIN |
 | `bhf_id` | string, ≤2 | Branch id |
-| `device_type` | `"OSCU"` \| `"VSCU"` | Default `"OSCU"`. Both share the exact same request/response contract — only the host differs. `"VSCU"` resolves to `KRA_BASE_URL_VSCU_SBX`/`_PROD` for every future call on this branch. |
-| `kra_base_url_override` | string, optional | Pins this branch to a specific host regardless of `device_type` or later changes to the global settings — e.g. a tenant with its own dedicated KRA gateway |
+| `device_type` | `"OSCU"` \| `"VSCU"` | Default `"OSCU"`. Genuinely different behavior, not just a different host (see `app/integrations/vscu/` vs `app/schemas/kra/`; `docs/kra_specs/README.md`, corrected 2026-09-01, follow-up fix 2026-09-02). `"OSCU"` calls real KRA's `/selectInitOsdcInfo` and persists the returned `cmcKey`. `"VSCU"` makes **no** KRA call at all — decompiling KRA's VSCU jar found no KRA-hosted registration endpoint for it — the branch is created locally with no `cmcKey` (the local VSCU app owns its own KRA trust anchor internally); see `POST /v1/vscu/{branch_id}/initialize` for the separate call that actually reaches the customer's local VSCU app. |
+| `kra_base_url_override` | string, optional | OSCU-only — pins this branch to a specific host regardless of `device_type` or later changes to the global settings (e.g. a tenant with its own dedicated KRA gateway). Ignored for a VSCU branch, which never calls KRA here at all. |
 
 **Response** `201` (never includes `cmc_key`):
 ```json
@@ -171,15 +171,213 @@ encrypted at rest, and creates the `branches` row every other endpoint reference
 
 ---
 
+## Admin — Customer Onboarding
+
+Admin-only. Creates a **Customer** (the paying business — owns branch access and billing) and
+the **Client** connector credential(s) that integrate on its behalf. A Customer can have
+several Clients (2026-09-01 — see `Customer`/`Client` docstrings in `app/db/models.py`): e.g.
+one connector for a prod SAP instance and a separate one for a staging environment, or two
+different systems both submitting on the same Customer's behalf. Branch access
+(`allowed_branch_ids`) and billing (`Subscription`/`Invoice`, see
+[Billing](#admin--billing) below) both belong to the Customer, not to any one Client — every
+connector under a Customer inherits the same branches and the same billing status.
+
+Replaces what used to be a manual raw SQL insert — see the
+[onboarding doc](client_onboarding_and_monitoring.md) for the full walkthrough.
+
+### `POST /v1/customers`
+
+**Request:** `{"name": "Jitihada Retail Ltd", "branch_codes": ["JITIHADA-NAIROBI-HQ", "JITIHADA-MOMBASA-PORT"]}`
+— `branch_codes` names branches the same way every other endpoint does (never raw UUIDs); omit
+or pass `[]` to create a Customer with no branch access yet and grant it later via `PATCH`.
+
+**Response** `201`:
+```json
+{"id": "...", "name": "Jitihada Retail Ltd", "branch_codes": ["JITIHADA-MOMBASA-PORT", "JITIHADA-NAIROBI-HQ"], "created_at": "..."}
+```
+**Errors:** `422` — one or more `branch_codes` don't exist.
+
+### `POST /v1/customers/onboard`
+
+The combined flow for a single-screen/stepper-form onboarding UI (2026-09-01): registers every
+branch a new Customer needs — real KRA device registration for OSCU branches, purely local
+registration plus a local VSCU app initialization call for VSCU ones (2026-09-02 follow-up fix:
+VSCU has no KRA-hosted registration call at all, see `docs/kra_specs/README.md`) — and creates
+the Customer, all in one call. Use `POST /v1/customers` above instead when the branches already
+exist (already registered via `POST /v1/devices/initialize`) and you just need to link a new
+Customer to existing `branch_codes`.
+
+**Request:**
+```json
+{
+  "name": "Jitihada Retail Ltd",
+  "branches": [
+    {"branch_code": "JITIHADA-NAIROBI-HQ", "tin": "P051234567X", "bhf_id": "00"},
+    {
+      "branch_code": "JITIHADA-MOMBASA-PORT", "tin": "P051234567X", "bhf_id": "01",
+      "device_type": "VSCU", "base_url": "http://192.168.1.10:8088"
+    }
+  ]
+}
+```
+Per branch: `branch_code`, `tin` (≤11), `bhf_id` (≤2), `device_type` (`"OSCU"`|`"VSCU"`, default
+`"OSCU"`), `base_url` (VSCU-only, **required** when `device_type="VSCU"` — the customer's local
+VSCU app URL on their own network), `kra_base_url_override` (optional, pins this branch to a
+specific KRA host). **Not included:** VSCU's `dvcSrlNo` — KRA issues that once, domain-wide, to
+this integration (not per-branch/per-customer), so it's resolved automatically from
+`VSCU_DVC_SRL_NO_SBX`/`_PROD` (see `.env.example`), never asked for here.
+
+**Response** `201` — always, even if every branch failed (see below):
+```json
+{
+  "customer": {"id": "...", "name": "Jitihada Retail Ltd", "branch_codes": ["JITIHADA-NAIROBI-HQ"], "created_at": "..."},
+  "branches": [
+    {"branch_code": "JITIHADA-NAIROBI-HQ", "device_type": "OSCU", "status": "REGISTERED", "branch_id": "...", "error": null},
+    {"branch_code": "JITIHADA-MOMBASA-PORT", "device_type": "VSCU", "status": "FAILED", "branch_id": null, "error": "VSCU error ...: connection refused"}
+  ]
+}
+```
+
+**Best-effort, not all-or-nothing** — this is deliberate, not a shortcut: an OSCU branch's KRA
+device registration has no "undo" (no delete API), so a real rollback across branches would be
+actively dangerous — a branch that registered successfully before a later one failed would
+leave KRA thinking it's installed with no local record (the same
+`DeviceAlreadyProvisionedButUnknown` trap `POST /v1/devices/initialize` already escalates to
+ops for a single branch). So every branch is attempted and committed independently; the
+Customer is created afterward with whichever branches succeeded, even zero. Fix the failed
+branches and POST the same payload again — safe to retry either way: KRA's own `902` ("already
+installed") handles it for OSCU, and re-registering the same `(tin, bhfId)` locally is a
+no-op for VSCU (see `docs/kra_specs/README.md`).
+
+A branch also fails (before ever calling KRA) if its `(tin, bhfId)` already belongs to a
+*different* customer — guards against a data-entry mistake quietly handing one customer access
+to another's branch.
+
+**Errors:** `422` — a VSCU branch is missing `base_url` (request-shape validation, before
+anything is attempted).
+
+### `GET /v1/customers`
+
+Lists every customer, newest first.
+
+### `GET /v1/customers/{customer_id}`
+
+Returns the same shape as create. **Errors:** `404`.
+
+### `PATCH /v1/customers/{customer_id}`
+
+**Request:** `{"name": "...", "branch_codes": [...]}` — both optional; only fields present are
+updated. `branch_codes` **replaces** the branch list wholesale, it doesn't merge.
+**Errors:** `404`; `422` — unknown branch code.
+
+### `POST /v1/customers/{customer_id}/connectors`
+
+Issues a new OAuth2 Client credential under this Customer.
+
+**Request:** `{"name": "JITIHADA-SAP"}`
+
+**Response** `201`:
+```json
+{"client_id": "...", "client_secret": "<raw secret, shown exactly once>", "name": "JITIHADA-SAP"}
+```
+`client_secret` is plaintext and **cannot be recovered later** — only its hash is stored. Hand
+it and `client_id` to the integrator now (Step 4 of the onboarding walkthrough). If the secret
+needs replacing later, use `POST .../rotate` below rather than creating a new connector.
+**Errors:** `404` — no such customer.
+
+### `GET /v1/customers/{customer_id}/connectors`
+
+Lists that customer's connectors (`client_id`, `name`, `created_at`, `revoked_at` — never the
+secret or its hash). `revoked_at` is `null` for an active connector. **Errors:** `404`.
+
+### `POST /v1/customers/{customer_id}/connectors/{client_id}/revoke`
+
+Soft-revokes the connector (2026-10-15): `Client.revoked_at` is set, so its existing OAuth2
+tokens are rejected immediately (`401`) and `POST /oauth/token` refuses to issue it a new one
+— but the row, and any fiscal/idempotency history behind it, are never deleted (`clients.id` is
+a real foreign key from `idempotency_keys`, among other reasons not to hard-delete it).
+Idempotent — revoking an already-revoked connector just returns its current state, not an
+error.
+
+**Response** `200`: same shape as `GET .../connectors`' list entries, with `revoked_at` now
+set. **Errors:** `404` — no such connector under this customer.
+
+### `POST /v1/customers/{customer_id}/connectors/{client_id}/rotate`
+
+Issues a fresh `client_secret` for the **same** `client_id` — the integrator updates only the
+secret it holds, nothing else. A `POST /oauth/token` using the old secret starts failing
+(`401`) the moment this runs; any token already issued before rotation stays valid until it
+naturally expires (rotation doesn't revoke outstanding tokens, only future issuance). Works
+independently of `revoked_at` — rotating a revoked connector's secret doesn't un-revoke it.
+
+**Response** `200`: same shape as `POST .../connectors`'s create response (`client_id`,
+`client_secret`, `name`) — the new secret, shown exactly once.
+**Errors:** `404` — no such connector under this customer.
+
+---
+
+## Admin — Dashboard
+
+Admin-only. Read-only views over data every other endpoint already writes — for the admin
+portal's branch/device-health and call-log screens. No new business logic; see
+`app/api/v1/endpoints/admin_dashboard.py`.
+
+### `GET /v1/admin/branches`
+
+Every branch, newest first, with VSCU device health inlined where applicable.
+
+**Response** `200`:
+```json
+[{
+  "id": "...", "branch_code": "JITIHADA-MOMBASA-PORT", "tin": "P051234567X", "bhf_id": "01",
+  "device_type": "VSCU", "status": "ACTIVE", "created_at": "...",
+  "vscu": {
+    "base_url": "http://192.168.1.10:8088", "initialized_at": "...",
+    "last_sequence_sync_at": "...", "last_known_invc_no": 42, "last_known_sale_rcpt_no": 42,
+    "last_successful_call_at": "...", "last_error": null
+  }
+}]
+```
+`vscu` is `null` for an OSCU branch (no device-state row exists for those).
+
+### `GET /v1/admin/branches/{branch_code}`
+
+Same shape as one element above. **Errors:** `404`.
+
+### `GET /v1/admin/call-logs`
+
+Merged, newest-first view across `kra_call_log` (OSCU) and `vscu_call_log` (VSCU). Never
+returns raw request payloads — only what those tables already store (endpoint, result code,
+timing).
+
+**Query params:** `branch_code` (optional filter), `protocol` (`OSCU`|`VSCU`, optional),
+`result_cd` (optional), `since` (ISO datetime, optional), `limit` (default 50, max 200).
+
+**Response** `200`:
+```json
+[{
+  "protocol": "VSCU", "id": 1042, "branch_code": "JITIHADA-MOMBASA-PORT",
+  "endpoint": "/trnsSales/saveSales", "result_cd": "000", "result_msg": "...",
+  "result_dt": "20260901120000", "http_status": 200, "latency_ms": 340,
+  "retry_count": null, "created_at": "..."
+}]
+```
+`http_status`/`latency_ms` are VSCU-only; `retry_count` is OSCU-only — the other is `null`.
+Note: `limit` returns the most recent N across both tables combined; there's no cursor-based
+offset yet for paging deep into history (see the module docstring if that becomes a real need).
+
+---
+
 ## Admin — Billing
 
 Admin-only (`X-Admin-Api-Key` or an admin portal bearer token). This is the gateway's own
 tenant billing — entirely outside the KRA spec. Internal tracking only: no payment processor
-integration. See
-[`billing_service.py`](../app/services/billing_service.py) for the enforcement rules and the
-[onboarding doc](client_onboarding_and_monitoring.md) for the full lifecycle story.
+integration. Keyed by `customer_id` (2026-09-01 — billing belongs to the Customer, not to any
+one of its Client connectors, see [Customer Onboarding](#admin--customer-onboarding) above).
+See [`billing_service.py`](../app/services/billing_service.py) for the enforcement rules and
+the [onboarding doc](client_onboarding_and_monitoring.md) for the full lifecycle story.
 
-### `PUT /v1/billing/subscriptions/{client_id}`
+### `PUT /v1/billing/subscriptions/{customer_id}`
 
 Creates the subscription if none exists, else renews `plan_name`/`current_period_end`
 /`grace_period_days` on the existing one. **Never touches `status`** — renewing the paid-through
@@ -191,44 +389,45 @@ date can't silently lift a `SUSPENDED`/`CANCELLED` state; use the explicit endpo
 |---|---|---|
 | `plan_name` | string | Default `"STANDARD"` — free text, not enum-constrained |
 | `current_period_end` | datetime (ISO 8601) | Paid-through date. Naive datetimes are treated as UTC |
-| `grace_period_days` | int, optional | Overrides the global `BILLING_GRACE_PERIOD_DAYS` (default 7) for this client only |
+| `grace_period_days` | int, optional | Overrides the global `BILLING_GRACE_PERIOD_DAYS` (default 7) for this customer only |
 
 **Response** `200`:
 ```json
 {
-  "client_id": "...", "plan_name": "STANDARD", "status": "ACTIVE",
+  "customer_id": "...", "plan_name": "STANDARD", "status": "ACTIVE",
   "current_period_end": "2026-12-31T00:00:00Z", "grace_period_days": null,
   "suspended_at": null, "suspended_reason": null
 }
 ```
 
-**Errors:** `404` — no `Client` row with that id.
+**Errors:** `404` — no `Customer` row with that id.
 
-### `GET /v1/billing/subscriptions/{client_id}`
+### `GET /v1/billing/subscriptions/{customer_id}`
 
-Returns the same shape as above. `404` if no subscription is on file for this client.
+Returns the same shape as above. `404` if no subscription is on file for this customer.
 
-### `POST /v1/billing/subscriptions/{client_id}/suspend`
+### `POST /v1/billing/subscriptions/{customer_id}/suspend`
 
-Blocks the client immediately, regardless of `current_period_end` — e.g. fraud, chargeback.
+Blocks every connector under this customer immediately, regardless of `current_period_end` —
+e.g. fraud, chargeback.
 
 **Request:** `{"reason": "chargeback on invoice INV-002"}`
 
 **Response** `200`: subscription with `status="SUSPENDED"`, `suspended_at` set,
 `suspended_reason` set. **Errors:** `404` — no subscription on file.
 
-### `POST /v1/billing/subscriptions/{client_id}/reactivate`
+### `POST /v1/billing/subscriptions/{customer_id}/reactivate`
 
 Clears an explicit suspension (`status` → `ACTIVE`, `suspended_at`/`suspended_reason` cleared).
 This is the *only* thing that lifts a suspension — renewing the period does not.
 **Errors:** `404` — no subscription on file.
 
-### `POST /v1/billing/subscriptions/{client_id}/cancel`
+### `POST /v1/billing/subscriptions/{customer_id}/cancel`
 
 Terminates the subscription (`status="CANCELLED"`) — permanent, distinct from `SUSPENDED`.
 **Errors:** `404` — no subscription on file.
 
-### `POST /v1/billing/clients/{client_id}/invoices`
+### `POST /v1/billing/customers/{customer_id}/invoices`
 
 Records a billing-period invoice. Purely a record — does not by itself change subscription state.
 
@@ -245,17 +444,17 @@ Records a billing-period invoice. Purely a record — does not by itself change 
 **Response** `201`:
 ```json
 {
-  "id": "...", "client_id": "...", "period_start": "2026-01-01T00:00:00Z",
+  "id": "...", "customer_id": "...", "period_start": "2026-01-01T00:00:00Z",
   "period_end": "2026-02-01T00:00:00Z", "amount": "5000.00", "currency": "KES",
   "status": "ISSUED", "issued_at": "2026-01-01T00:03:11Z", "paid_at": null, "notes": null
 }
 ```
 
-**Errors:** `404` — no `Client` row with that id.
+**Errors:** `404` — no `Customer` row with that id.
 
-### `GET /v1/billing/clients/{client_id}/invoices`
+### `GET /v1/billing/customers/{customer_id}/invoices`
 
-Lists that client's invoices, newest first. Returns `[]` if none exist (not a `404`).
+Lists that customer's invoices, newest first. Returns `[]` if none exist (not a `404`).
 
 ### `POST /v1/billing/invoices/{invoice_id}/mark-paid`
 
@@ -395,7 +594,25 @@ also released).
 
 ### `GET /v1/sales-invoices/{external_ref}`
 
-Query param: `branch_code` (required). Returns the same shape as the POST response, or `404`.
+Query params: `branch_code` (required), `transaction_kind` (`"SALE"`|`"CREDIT_NOTE"`, default
+`"SALE"` — the two are independent idempotency/ref namespaces). Returns the same shape as the
+POST response, or `404`.
+
+### `POST /v1/sales-invoices/credit-notes`
+
+A credit note is its own fiscal transaction referencing an original sale — never a mutation of
+it. Same request/response/idempotency shape as `POST /v1/sales-invoices` above, plus:
+
+| Field | Type | Notes |
+|---|---|---|
+| `original_invoice_ref` | string | The original sale's own `external_invoice_ref` — must already be `FISCALIZED` on this branch |
+| `reason` | string | Friendly code (`GET /v1/codes/credit-note-reason`) or raw KRA code |
+
+**Response** `201`: same shape as a sale, plus `"transaction_kind": "CREDIT_NOTE"` and
+`"original_ref": "<the original's external_invoice_ref>"`.
+
+**Errors:** as above, plus `422` — `original_invoice_ref` doesn't resolve to a `FISCALIZED`
+sale on this branch (including if it resolves to another credit note, not a sale).
 
 ---
 
@@ -475,6 +692,57 @@ Query param: `branch_code` (required). Cached KRA notices, read-only.
 ```json
 [{"branch_code": "...", "notice_no": "...", "title": "...", "cont": "...", "dtl_url": null, "regr_nm": null, "reg_dt": null}]
 ```
+
+---
+
+## Client — Monitoring
+
+Client bearer, not the admin key — a Customer's own connector can view its own activity, always
+scoped to `Client.customer.allowed_branch_ids` the same way every other client route is (spec
+§15's branch allow-listing). This is genuinely new (2026-09-01): previously the only way to see
+what happened for a client was ops looking at `kra_call_log`/`vscu_call_log` directly. See
+`app/api/v1/endpoints/monitoring.py`.
+
+### `GET /v1/monitoring/invoices`
+
+**Query params:** `branch_code` (required), `transaction_kind` (`"SALE"`|`"CREDIT_NOTE"`,
+optional), `status` (optional, e.g. `FISCALIZED`), `limit` (default 50, max 200).
+
+**Response** `200`:
+```json
+[{
+  "external_ref": "SAP-BILLDOC-0001", "branch_code": "NAIROBI-HQ", "transaction_kind": "SALE",
+  "original_ref": null, "status": "FISCALIZED", "kra_cur_rcpt_no": 1,
+  "kra_rcpt_sign": "2222222222222222", "created_at": "..."
+}]
+```
+
+### `GET /v1/monitoring/call-logs`
+
+**Query params:** `branch_code` (required), `result_cd` (optional), `limit` (default 50, max
+200). Reads `kra_call_log` for an OSCU branch, `vscu_call_log` for a VSCU one — never a raw
+request payload, only what those tables already store.
+
+**Response** `200`:
+```json
+[{
+  "protocol": "OSCU", "endpoint": "/saveTrnsSalesOsdc", "result_cd": "000",
+  "result_msg": "It is succeeded", "result_dt": "20260901120000",
+  "http_status": null, "latency_ms": null, "created_at": "..."
+}]
+```
+
+### `GET /v1/monitoring/branches/{branch_code}/z-report/{rpt_de}`
+
+Reads a VSCU day-closing (Z) report already built by the branch's local VSCU device —
+`rpt_de` is the report date, `YYYYMMDD`. Read-only: there's no client-facing way to *trigger* a
+fresh Z-report build (that's an admin/diagnostic action — `POST` on the equivalent admin route
+under `/v1/vscu/{branch_id}/reports/z/save`).
+
+**Errors:** `400` — the branch is OSCU, not VSCU. Whether OSCU has an equivalent day-closing
+report has not been verified against the spec/decompiled jar the way VSCU's was, so this
+deliberately refuses rather than fabricating a contract that hasn't been confirmed to exist.
+`502` — the VSCU device itself returned an error (e.g. no report exists yet for that date).
 
 ---
 

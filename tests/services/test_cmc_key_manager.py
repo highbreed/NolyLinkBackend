@@ -132,11 +132,13 @@ async def test_other_auth_errors_propagate(db_session, kra):
 async def test_initialize_device_with_explicit_override_persists_it_and_calls_that_host(
     db_session, kra
 ):
-    """An admin pinning a specific branch to a specific host (e.g. a VSCU tenant on its own
-    endpoint) must both call that host for the bootstrap request and persist the override, so
-    every later call for this branch (Phases 5-8) keeps using it via KraAdapter._resolve_base_url.
+    """An admin pinning an OSCU branch to a specific host (e.g. a tenant with its own dedicated
+    KRA gateway) must both call that host for the bootstrap request and persist the override,
+    so every later call for this branch (Phases 5-8) keeps using it via
+    KraAdapter._resolve_base_url. OSCU-only: kra_base_url_override has no effect for VSCU (no
+    KRA-hosted call exists for it at all — see the VSCU tests below).
     """
-    override_url = "https://vscu-tenant-y.example/etims-api"
+    override_url = "https://oscu-tenant-y.example/etims-api"
     res_body = load_fixture("device_verification_res")
 
     with respx.mock() as mock:
@@ -146,47 +148,47 @@ async def test_initialize_device_with_explicit_override_persists_it_and_calls_th
         branch = await cmc_key_manager.initialize_device(
             db_session,
             kra,
-            "VSCU-TENANT-Y",
+            "OSCU-TENANT-Y",
             "A666666666Z",
             "00",
-            device_type="VSCU",
             kra_base_url_override=override_url,
         )
 
-    assert branch.device_type == "VSCU"
+    assert branch.device_type == "OSCU"
     assert branch.kra_base_url_override == override_url
 
 
-async def test_initialize_device_vscu_uses_configured_global_default(db_session):
-    """device_type=VSCU with no per-branch override falls back to the global
-    kra_base_url_vscu_sbx setting — and does NOT persist a resolved URL onto the branch, so a
-    later change to that global setting is still picked up (see kra_adapter._resolve_base_url).
+async def test_initialize_device_vscu_registers_locally_without_calling_kra(db_session, kra):
+    """device_type=VSCU has no KRA-hosted registration call at all — decompiling
+    vscu-v2.0.21.jar confirms no /selectInitOsdcInfo-equivalent exists for VSCU
+    (docs/kra_specs/README.md's 2026-09-01 correction; app/services/cmc_key_manager.py's
+    _register_vscu_branch_locally). A respx.mock with no route registered proves it: any real
+    HTTP call within this scope fails loudly rather than silently succeeding.
     """
-    vscu_url = "https://vscu.kra-sandbox.test/etims-api"
-    vscu_settings = Settings(
-        kra_env="sandbox", kra_base_url_sbx=f"{BASE_URL}/", kra_base_url_vscu_sbx=vscu_url
-    )
-    vscu_kra = KraAdapter(db=db_session, settings=vscu_settings)
-    res_body = load_fixture("device_verification_res")
-
-    with respx.mock() as mock:
-        mock.post(f"{vscu_url}/selectInitOsdcInfo").mock(return_value=Response(200, json=res_body))
+    with respx.mock():
         branch = await cmc_key_manager.initialize_device(
-            db_session, vscu_kra, "VSCU-STD", "A777777777Z", "00", device_type="VSCU"
+            db_session, kra, "VSCU-STD", "A777777777Z", "00", device_type="VSCU"
         )
 
     assert branch.device_type == "VSCU"
-    assert branch.kra_base_url_override is None
+    assert branch.cmc_key is None
+    assert branch.dvc_id is None
 
 
-async def test_initialize_device_vscu_without_configured_url_raises(db_session, kra):
-    """adapter_settings (the default test fixture) never sets kra_base_url_vscu_sbx — this
-    must fail loudly rather than silently POSTing to an empty host.
+async def test_initialize_device_vscu_is_idempotent_by_tin_bhf_id(db_session, kra):
+    """Re-registering the same (tin, bhfId) — e.g. resubmitting an onboarding form after fixing
+    an unrelated branch's failure — returns the existing local record rather than erroring or
+    duplicating it, mirroring initialize_device's own 902-already-provisioned behavior for OSCU.
     """
-    with pytest.raises(ValueError, match="kra_base_url_vscu_sandbox"):
-        await cmc_key_manager.initialize_device(
-            db_session, kra, "VSCU-UNCONFIGURED", "A888888888Z", "00", device_type="VSCU"
+    with respx.mock():
+        first = await cmc_key_manager.initialize_device(
+            db_session, kra, "VSCU-DUP", "A999999999Z", "00", device_type="VSCU"
         )
+        second = await cmc_key_manager.initialize_device(
+            db_session, kra, "VSCU-DUP", "A999999999Z", "00", device_type="VSCU"
+        )
+
+    assert second.id == first.id
 
 
 async def test_get_branch_credentials_round_trips_cmc_key(db_session):

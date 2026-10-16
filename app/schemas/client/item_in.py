@@ -3,8 +3,10 @@
 Client systems shouldn't need to know KRA's field names (itemClsCd, pkgUnitCd, ...) — the
 mapper in app/services/mapping/generic_mapper.py converts this into ItemSaveReq. There's no
 friendly crosswalk for item_classification_cd or origin_nation_cd in the source spec (unlike
-tax_category/product_type/unit_of_measure/packaging_unit), so those are accepted as raw KRA
-codes directly.
+tax_category/product_type/unit_of_measure/packaging_unit), so both are accepted as raw KRA
+codes directly rather than friendly names — but, like unit_of_measure/packaging_unit, they are
+still validated against a cache (KraItemClass / the "nation" classification) by the mapper, not
+passed through unchecked.
 """
 
 from decimal import Decimal

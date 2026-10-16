@@ -20,6 +20,7 @@ synthetic KRA response and are what actually runs in CI.
 """
 
 import os
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -60,6 +61,10 @@ async def sandbox_branch(db_session) -> Branch:
 
 
 async def test_submit_sales_invoice_against_real_sandbox(db_session, sandbox_branch):
+    # No real Customer/Client is created for this ad hoc sandbox script — a fresh random id
+    # has no CustomerCodeAllowlist rows, so it's unrestricted (see code_allowlist_service.py),
+    # exactly like every Customer before this feature existed.
+    customer_id = uuid.uuid4()
     kra = KraAdapter(db=db_session)
     try:
         # Register a throwaway item first, same as a real client would via POST /v1/items.
@@ -75,7 +80,12 @@ async def test_submit_sales_invoice_against_real_sandbox(db_session, sandbox_bra
             unit_price=Decimal("1.00"),
         )
         item_req, item_cd = await map_client_item_to_kra(
-            db_session, sandbox_branch, item_payload, regr_id="admin", regr_nm="Administrator"
+            db_session,
+            sandbox_branch,
+            item_payload,
+            regr_id="admin",
+            regr_nm="Administrator",
+            customer_id=customer_id,
         )
         item_res = await kra.save_item(item_req, branch_id=sandbox_branch.id)
         assert item_res.resultCd == "000"
@@ -112,7 +122,12 @@ async def test_submit_sales_invoice_against_real_sandbox(db_session, sandbox_bra
             ],
         )
         sales_req = await map_client_sales_invoice_to_kra(
-            db_session, sandbox_branch, sales_payload, regr_id="admin", regr_nm="Administrator"
+            db_session,
+            sandbox_branch,
+            sales_payload,
+            regr_id="admin",
+            regr_nm="Administrator",
+            customer_id=customer_id,
         )
         sales_res = await kra.save_sales_transaction(sales_req, branch_id=sandbox_branch.id)
 
