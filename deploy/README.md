@@ -22,26 +22,14 @@ Separate git checkout from the dev copy, same pattern as every sibling service:
 sudo mkdir -p /home/dev/web_files/kra_vscu/production
 sudo chown dev:dev /home/dev/web_files/kra_vscu/production
 cd /home/dev/web_files/kra_vscu/production
-git clone /home/dev/web_files/kra_vscu/kra_vscu_backend kra_vscu_backend  # or a real remote, once one exists
+git clone https://github.com/highbreed/NolyLinkBackend.git kra_vscu_backend
 cd kra_vscu_backend
-git checkout main   # see "No remote / no main branch yet" below if this doesn't exist
+git checkout main
 
 python3.11 -m venv venv
 source venv/bin/activate
 pip install .          # no [dev] extras in production — pulls in gunicorn (added this phase)
 ```
-
-### No remote / no main branch yet
-
-As of this write-up, this repo has no git remote configured and no `main` branch — only
-`master`, with everything committed locally. Before this step is real, either:
-
-- push `master` to a remote (GitHub/GitLab/etc.) and deploy from a `main`/release branch there, or
-- `git clone` directly from this local path (as above) and `git checkout master` instead of
-  `main`, accepting that "deploy" then means pulling from this exact machine's working copy.
-
-Either way, decide this before wiring up `install.sh`'s rollout step (step 7) — it assumes a
-normal `git pull origin main`.
 
 ## 2. Database
 
@@ -191,9 +179,15 @@ sudo systemctl restart kra-vscu-backend-api kra-vscu-backend-worker kra-vscu-bac
 
 ## Known gaps at the time of writing
 
-- No remote git repository and no `main` branch — see step 1.
 - `mypy app` currently reports 5 pre-existing errors (OSCU/VSCU `ItemSaveReq` schema overlap in
   `app/services/code_allowlist_service.py`/`code_cache_service.py`/`app/api/v1/endpoints/items.py`)
   — doesn't block deployment (the app runs and the full test suite passes), but worth a
   follow-up before this grows further.
-- Domain name and TLS for the nginx site are both placeholders — see step 5.
+
+## Resolved since the time of writing
+
+- A real remote now exists: `https://github.com/highbreed/NolyLinkBackend.git`, `main` branch.
+  Step 1's clone should use this remote, not the local-path fallback.
+- Domain confirmed as `kra-vscu.dg.com` (real, not a placeholder) and plain HTTP confirmed
+  intentional (upstream proxy terminates TLS before traffic reaches this box) — see step 5 and
+  `deploy/nginx/kra-vscu-backend.conf`.
