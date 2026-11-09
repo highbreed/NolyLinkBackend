@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     admin_client_calls,
     admin_dashboard,
+    admin_monitoring,
     admin_reference_data,
     billing,
     branches,
@@ -38,6 +39,9 @@ api_router.include_router(
 )
 api_router.include_router(
     admin_client_calls.router, prefix="/admin/client-calls", tags=["admin"]
+)
+api_router.include_router(
+    admin_monitoring.router, prefix="/admin/monitoring", tags=["admin"]
 )
 api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
