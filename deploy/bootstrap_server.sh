@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Fully self-contained bootstrap for a BRAND NEW remote server: assumes NOTHING is installed
-# yet (no Python 3.11, no Postgres, no Redis, no nginx, no 'dev' user, no checkout) and builds
-# the whole stack from a bare Ubuntu 22.04/24.04 box up to a running kra-vscu-backend.
+# yet (no Python 3.11, no Node.js, no Postgres, no Redis, no nginx, no 'dev' user, no checkout)
+# and builds the whole stack from a bare Ubuntu 22.04/24.04 box up to a running kra-vscu-backend
+# API plus its admin-portal frontend (NolyLinkAdmin), served from the same domain — the
+# frontend has no CORS middleware to rely on, so it must share the API's origin.
+# Set ENABLE_FRONTEND=false to deploy the API only.
 #
 # This is a different script from deploy/install.sh (which assumes it's running on the
 # existing shared dev box, where Postgres/Redis/the 'dev' user/the git remote already exist
@@ -33,6 +36,11 @@ CONFIRM_PRODUCTION="${CONFIRM_PRODUCTION:-}"
 
 DB_NAME="${DB_NAME:-kra_vscu_production}"
 DB_USER="${DB_USER:-kra_vscu_prod}"
+
+FRONTEND_ROOT="${FRONTEND_ROOT:-/opt/kra-vscu-frontend}"
+FRONTEND_GIT_REPO_URL="${FRONTEND_GIT_REPO_URL:-https://github.com/highbreed/NolyLinkAdmin.git}"
+FRONTEND_GIT_BRANCH="${FRONTEND_GIT_BRANCH:-main}"
+ENABLE_FRONTEND="${ENABLE_FRONTEND:-true}"   # set to "false" to deploy the API only
 
 PYTHON_PKG="python3.11"
 SOCKET_PATH="/var/sockets/kra_vscu_backend_api.sock"
@@ -85,13 +93,14 @@ echo "   App user     : $APP_USER (locked-down, no login)"
 echo "   Domain       : $DOMAIN"
 echo "   TLS          : $ENABLE_TLS"
 echo "   KRA_ENV      : $KRA_ENV"
-echo "   Git          : $GIT_REPO_URL @ $GIT_BRANCH"
+echo "   Git (API)    : $GIT_REPO_URL @ $GIT_BRANCH"
+echo "   Frontend     : $ENABLE_FRONTEND ($FRONTEND_GIT_REPO_URL @ $FRONTEND_GIT_BRANCH)"
 echo "=============================================================================="
 
 # ---------------------------------------------------------------------------
 # 1. System packages
 # ---------------------------------------------------------------------------
-echo "==> [1/11] Installing system packages"
+echo "==> [1/12] Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 
@@ -113,6 +122,12 @@ if [[ "$ENABLE_TLS" == "true" ]]; then
     apt-get install -y certbot python3-certbot-nginx
 fi
 
+if [[ "$ENABLE_FRONTEND" == "true" ]] && ! command -v node &>/dev/null; then
+    echo "==> Node.js not found — installing Node 20.x (NodeSource) for the frontend build"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+fi
+
 systemctl enable --now postgresql
 systemctl enable --now redis-server
 systemctl enable --now nginx
@@ -120,7 +135,7 @@ systemctl enable --now nginx
 # ---------------------------------------------------------------------------
 # 2. Service account
 # ---------------------------------------------------------------------------
-echo "==> [2/11] Creating service account '$APP_USER'"
+echo "==> [2/12] Creating service account '$APP_USER'"
 mkdir -p "$APP_ROOT"
 if ! id -u "$APP_USER" &>/dev/null; then
     useradd --system --no-create-home --home-dir "$APP_ROOT" --shell /usr/sbin/nologin "$APP_USER"
@@ -131,7 +146,7 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Checkout
 # ---------------------------------------------------------------------------
-echo "==> [3/11] Cloning application"
+echo "==> [3/12] Cloning application"
 if [[ -d "$APP_ROOT/.git" ]]; then
     echo "    Checkout already exists at $APP_ROOT — pulling latest $GIT_BRANCH instead of cloning."
     sudo -u "$APP_USER" git -C "$APP_ROOT" fetch origin "$GIT_BRANCH"
@@ -145,7 +160,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Python environment
 # ---------------------------------------------------------------------------
-echo "==> [4/11] Building virtualenv + installing dependencies"
+echo "==> [4/12] Building virtualenv + installing dependencies"
 sudo -u "$APP_USER" bash -c "
     cd '$APP_ROOT'
     $PYTHON_PKG -m venv venv
@@ -157,9 +172,29 @@ mkdir -p "$APP_ROOT/logs"
 chown "$APP_USER:$APP_USER" "$APP_ROOT/logs"
 
 # ---------------------------------------------------------------------------
-# 5. Postgres role + database (idempotent)
+# 5. Frontend (admin portal) — same origin as the API, no CORS anywhere by design
 # ---------------------------------------------------------------------------
-echo "==> [5/11] Configuring Postgres"
+if [[ "$ENABLE_FRONTEND" == "true" ]]; then
+    echo "==> [5/12] Cloning + building frontend"
+    mkdir -p "$FRONTEND_ROOT"
+    if [[ -d "$FRONTEND_ROOT/.git" ]]; then
+        echo "    Checkout already exists at $FRONTEND_ROOT — pulling latest $FRONTEND_GIT_BRANCH."
+        sudo -u "$APP_USER" git -C "$FRONTEND_ROOT" fetch origin "$FRONTEND_GIT_BRANCH"
+        sudo -u "$APP_USER" git -C "$FRONTEND_ROOT" checkout "$FRONTEND_GIT_BRANCH"
+        sudo -u "$APP_USER" git -C "$FRONTEND_ROOT" pull --ff-only origin "$FRONTEND_GIT_BRANCH"
+    else
+        git clone --branch "$FRONTEND_GIT_BRANCH" "$FRONTEND_GIT_REPO_URL" "$FRONTEND_ROOT"
+        chown -R "$APP_USER:$APP_USER" "$FRONTEND_ROOT"
+    fi
+    sudo -u "$APP_USER" bash -c "cd '$FRONTEND_ROOT' && npm ci && npm run build"
+else
+    echo "==> [5/12] Skipping frontend (ENABLE_FRONTEND=false)"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Postgres role + database (idempotent)
+# ---------------------------------------------------------------------------
+echo "==> [6/12] Configuring Postgres"
 DB_PASSWORD_NEW="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9')"
 
 if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1; then
@@ -177,9 +212,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Redis password (idempotent — only set once, first run)
+# 7. Redis password (idempotent — only set once, first run)
 # ---------------------------------------------------------------------------
-echo "==> [6/11] Configuring Redis"
+echo "==> [7/12] Configuring Redis"
 REDIS_CONF="/etc/redis/redis.conf"
 REDIS_PASSWORD_NEW="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9')"
 
@@ -193,9 +228,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. .env (only generated once — never overwritten on re-run)
+# 8. .env (only generated once — never overwritten on re-run)
 # ---------------------------------------------------------------------------
-echo "==> [7/11] Writing .env"
+echo "==> [8/12] Writing .env"
 ENV_FILE="$APP_ROOT/.env"
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -244,15 +279,15 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Migrations
+# 9. Migrations
 # ---------------------------------------------------------------------------
-echo "==> [8/11] Running migrations"
+echo "==> [9/12] Running migrations"
 sudo -u "$APP_USER" bash -c "cd '$APP_ROOT' && venv/bin/alembic upgrade head"
 
 # ---------------------------------------------------------------------------
-# 9. systemd units
+# 10. systemd units
 # ---------------------------------------------------------------------------
-echo "==> [9/11] Installing systemd units"
+echo "==> [10/12] Installing systemd units"
 mkdir -p /var/sockets
 chown "$APP_USER:$APP_USER" /var/sockets
 
@@ -355,17 +390,21 @@ for unit in kra-vscu-backend-api kra-vscu-backend-worker kra-vscu-backend-beat; 
 done
 
 # ---------------------------------------------------------------------------
-# 10. nginx site
+# 11. nginx site
 # ---------------------------------------------------------------------------
-echo "==> [10/11] Installing nginx site for $DOMAIN"
-cat > "/etc/nginx/sites-available/kra-vscu-backend.conf" <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    access_log /var/log/nginx/kra-vscu-backend-access.log;
-    error_log /var/log/nginx/kra-vscu-backend-error.log;
-
+echo "==> [11/12] Installing nginx site for $DOMAIN"
+if [[ "$ENABLE_FRONTEND" == "true" ]]; then
+    FRONTEND_LOCATION_BLOCK=$(cat <<EOF
+    # Admin portal SPA — same origin as the API below (it has no CORS middleware, by design;
+    # the frontend only ever fetches relative /v1, /admin, /oauth paths).
+    root $FRONTEND_ROOT/dist;
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+EOF
+)
+else
+    FRONTEND_LOCATION_BLOCK=$(cat <<EOF
     location / {
         proxy_pass http://unix:$SOCKET_PATH;
         proxy_http_version 1.1;
@@ -374,11 +413,46 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
+EOF
+)
+fi
 
-    location = /v1/health {
-        proxy_pass http://unix:$SOCKET_PATH:/v1/health;
+cat > "/etc/nginx/sites-available/kra-vscu-backend.conf" <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    access_log /var/log/nginx/kra-vscu-backend-access.log;
+    error_log /var/log/nginx/kra-vscu-backend-error.log;
+
+    location /v1/ {
+        proxy_pass http://unix:$SOCKET_PATH;
+        proxy_http_version 1.1;
         proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
+
+    location /oauth/ {
+        proxy_pass http://unix:$SOCKET_PATH;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /admin/ {
+        proxy_pass http://unix:$SOCKET_PATH;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+$FRONTEND_LOCATION_BLOCK
 }
 EOF
 
@@ -387,13 +461,13 @@ nginx -t
 systemctl reload nginx
 
 # ---------------------------------------------------------------------------
-# 11. TLS
+# 12. TLS
 # ---------------------------------------------------------------------------
 if [[ "$ENABLE_TLS" == "true" ]]; then
-    echo "==> [11/11] Obtaining TLS certificate for $DOMAIN"
+    echo "==> [12/12] Obtaining TLS certificate for $DOMAIN"
     certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$CERTBOT_EMAIL" --redirect
 else
-    echo "==> [11/11] Skipping TLS (ENABLE_TLS=false) — plain HTTP only."
+    echo "==> [12/12] Skipping TLS (ENABLE_TLS=false) — plain HTTP only."
 fi
 
 # ---------------------------------------------------------------------------
@@ -415,13 +489,20 @@ echo " Verify:"
 echo "   curl --unix-socket $SOCKET_PATH http://localhost/v1/health"
 if [[ "$ENABLE_TLS" == "true" ]]; then
     echo "   curl https://$DOMAIN/v1/health"
+    if [[ "$ENABLE_FRONTEND" == "true" ]]; then
+        echo "   open https://$DOMAIN/          # admin portal"
+    fi
 else
     echo "   curl http://$DOMAIN/v1/health"
+    if [[ "$ENABLE_FRONTEND" == "true" ]]; then
+        echo "   open http://$DOMAIN/          # admin portal"
+    fi
 fi
 echo "   journalctl -u kra-vscu-backend-api -f"
 echo ""
 echo " Still to do by hand (never automated):"
-echo "   - Create the first AdminUser: POST /admin/users using the ADMIN_API_KEY above."
+echo "   - Create the first AdminUser: POST /admin/users using the ADMIN_API_KEY above, then"
+echo "     log into the admin portal with it."
 echo "   - KRA_ENV is '$KRA_ENV'. Going to production is a separate, deliberate decision —"
 echo "     see the KRA environment section of deploy/README.md for everything that implies."
 echo "   - VSCU_DVC_SRL_NO_SBX / VSCU_DVC_SRL_NO_PROD in .env are still blank — fill in once"
