@@ -104,6 +104,27 @@ async def test_outbox_list_paginates_and_filters_by_status(client, db_session, a
     assert all(item["status"] == "PENDING" for item in body["items"])
 
 
+async def test_outbox_list_free_text_search_matches_endpoint_or_branch(client, db_session, admin_headers):
+    tin = _tin()
+    branch = Branch(branch_code="BR-SEARCHME", tin=tin, bhf_id="00", cmc_key="c" * 10)
+    db_session.add(branch)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Outbox(endpoint="/trnsSales/saveSales", payload={}, status="PENDING", branch_id=branch.id),
+            Outbox(endpoint="/stockMaster/saveStockMaster", payload={}, status="PENDING"),
+        ]
+    )
+    await db_session.flush()
+
+    response = await client.get(
+        "/v1/admin/monitoring/outbox", params={"q": "searchme"}, headers=admin_headers
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["endpoint"] for item in items] == ["/trnsSales/saveSales"]
+
+
 async def test_outbox_retry_resets_attempts_and_status(client, db_session, admin_headers):
     row = Outbox(endpoint="/e", payload={}, status="FAILED", attempts=5, last_error="boom")
     db_session.add(row)

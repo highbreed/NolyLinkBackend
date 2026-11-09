@@ -171,6 +171,7 @@ async def list_outbox(
     status: str | None = None,
     branch_code: str | None = None,
     customer_id: uuid.UUID | None = None,
+    q: str | None = Query(default=None, description="Free-text match on endpoint/branch/customer"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, le=200, ge=1),
     db: AsyncSession = Depends(get_db),
@@ -199,6 +200,19 @@ async def list_outbox(
             and customer_by_branch_id.get(r.branch_id) is not None
             and customer_by_branch_id[r.branch_id].id == customer_id
         ]
+
+    if q:
+        needle = q.lower()
+
+        def _matches(r: Outbox) -> bool:
+            b = branches_by_id.get(r.branch_id) if r.branch_id else None
+            c = customer_by_branch_id.get(r.branch_id) if r.branch_id else None
+            haystack = " ".join(
+                filter(None, [r.endpoint, b.branch_code if b else None, c.name if c else None])
+            )
+            return needle in haystack.lower()
+
+        rows = [r for r in rows if _matches(r)]
 
     total = len(rows)
     start = (page - 1) * page_size
