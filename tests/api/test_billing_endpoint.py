@@ -94,7 +94,7 @@ async def test_upsert_for_unknown_client_is_404(client, admin_headers):
     assert response.status_code == 404
 
 
-async def test_suspend_then_reactivate(client, admin_headers, registered_customer):
+async def test_suspend_then_reactivate(client, admin_headers, registered_customer, db_session):
     async with client as c:
         await c.put(
             f"/v1/billing/subscriptions/{registered_customer.id}",
@@ -116,6 +116,19 @@ async def test_suspend_then_reactivate(client, admin_headers, registered_custome
     assert reactivated.status_code == 200
     assert reactivated.json()["status"] == "ACTIVE"
     assert reactivated.json()["suspended_reason"] is None
+
+    # Both mutations recorded to admin_audit_log (app/services/admin_audit.py), not just
+    # logged to stdout — the whole point of this phase's work.
+    from sqlalchemy import select
+
+    from app.db.models import AdminAuditLog
+
+    actions = (
+        (await db_session.execute(select(AdminAuditLog.action).order_by(AdminAuditLog.id)))
+        .scalars()
+        .all()
+    )
+    assert actions == ["subscription.suspend", "subscription.reactivate"]
 
 
 async def test_create_invoice_and_mark_paid_extends_subscription(

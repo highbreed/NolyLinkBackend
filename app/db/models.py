@@ -703,3 +703,33 @@ class ClientCallLog(Base):
     request_body: Mapped[dict[str, object] | list[object] | str | None] = mapped_column(JSONB)
     response_body: Mapped[dict[str, object] | list[object] | str | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class AdminAuditLog(Base):
+    """A record of every admin action ("admin X suspended customer Y") — distinct from both
+    ClientCallLog (what SAP/ERP clients sent us) and the stdout-only logger.info() calls
+    scattered across admin.py/billing.py/customers.py/device.py, which this supplements, not
+    replaces. Written by app/services/admin_audit.py::record_admin_action, called inside the
+    same transaction as the action it records (before that endpoint's own commit), so it's
+    never out of sync with what actually happened.
+
+    admin_user_email is really AdminUser.username, not a verified email — AdminUser has no
+    email column (see its own docstring) — kept under this name only because the frontend's
+    AuditLogEntry TS type already committed to it; None means the static X-Admin-Api-Key
+    break-glass credential was used instead of a real admin login.
+    """
+
+    __tablename__ = "admin_audit_log"
+    __table_args__ = (Index("ix_admin_audit_log_created_at", "created_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    admin_user_email: Mapped[str | None] = mapped_column(String)
+    action: Mapped[str] = mapped_column(String)
+    target_type: Mapped[str] = mapped_column(String, index=True)
+    target_id: Mapped[str] = mapped_column(String, index=True)
+    before_state: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    after_state: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    reason: Mapped[str | None] = mapped_column(String)
+    ip_address: Mapped[str | None] = mapped_column(String)
+    request_id: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

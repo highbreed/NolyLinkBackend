@@ -15,14 +15,14 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin
 from app.db.models import Invoice, Subscription
 from app.db.session import get_db
-from app.services import billing_service
+from app.services import admin_audit, billing_service
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +102,22 @@ class SuspendRequest(BaseModel):
 async def suspend_subscription(
     customer_id: uuid.UUID,
     payload: SuspendRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> SubscriptionOut:
     try:
         sub = await billing_service.suspend_subscription(db, customer_id, payload.reason)
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="subscription.suspend",
+            target_type="customer",
+            target_id=str(customer_id),
+            after={"status": "SUSPENDED"},
+            reason=payload.reason,
+            request=request,
+        )
         await db.commit()
     except billing_service.SubscriptionNotFoundError as exc:
         await db.rollback()
@@ -123,11 +134,21 @@ async def suspend_subscription(
 @router.post("/subscriptions/{customer_id}/reactivate", response_model=SubscriptionOut)
 async def reactivate_subscription(
     customer_id: uuid.UUID,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> SubscriptionOut:
     try:
         sub = await billing_service.reactivate_subscription(db, customer_id)
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="subscription.reactivate",
+            target_type="customer",
+            target_id=str(customer_id),
+            after={"status": "ACTIVE"},
+            request=request,
+        )
         await db.commit()
     except billing_service.SubscriptionNotFoundError as exc:
         await db.rollback()
@@ -139,11 +160,21 @@ async def reactivate_subscription(
 @router.post("/subscriptions/{customer_id}/cancel", response_model=SubscriptionOut)
 async def cancel_subscription(
     customer_id: uuid.UUID,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> SubscriptionOut:
     try:
         sub = await billing_service.cancel_subscription(db, customer_id)
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="subscription.cancel",
+            target_type="customer",
+            target_id=str(customer_id),
+            after={"status": "CANCELLED"},
+            request=request,
+        )
         await db.commit()
     except billing_service.SubscriptionNotFoundError as exc:
         await db.rollback()
@@ -231,12 +262,22 @@ class MarkPaidRequest(BaseModel):
 async def mark_invoice_paid(
     invoice_id: uuid.UUID,
     payload: MarkPaidRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> InvoiceOut:
     try:
         inv = await billing_service.mark_invoice_paid(
             db, invoice_id, payload.extend_subscription_to
+        )
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="invoice.mark_paid",
+            target_type="invoice",
+            target_id=str(invoice_id),
+            after={"status": "PAID", "paid_at": inv.paid_at.isoformat() if inv.paid_at else None},
+            request=request,
         )
         await db.commit()
     except billing_service.InvoiceNotFoundError as exc:

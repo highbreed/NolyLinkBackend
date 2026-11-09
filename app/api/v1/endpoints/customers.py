@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.admin_auth import require_admin
 from app.db.models import Branch, Client, Customer
 from app.db.session import get_db
-from app.services import customer_service
+from app.services import admin_audit, customer_service
 from app.services.customer_onboarding_service import BranchRegistrationInput, onboard_customer
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ async def _to_customer_out(db: AsyncSession, customer: Customer) -> CustomerOut:
 @router.post("", response_model=CustomerOut, status_code=201)
 async def create_customer(
     payload: CustomerCreateRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> CustomerOut:
@@ -73,6 +74,15 @@ async def create_customer(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     customer = await customer_service.create_customer(db, payload.name, branch_ids)
+    await admin_audit.record_admin_action(
+        db,
+        actor=admin_actor,
+        action="customer.create",
+        target_type="customer",
+        target_id=str(customer.id),
+        after={"name": customer.name, "branch_codes": payload.branch_codes},
+        request=request,
+    )
     await db.commit()
     logger.info("Customer %s (%s) created by %s", customer.id, customer.name, admin_actor)
     return await _to_customer_out(db, customer)
@@ -96,6 +106,7 @@ async def get_customer(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db
 async def update_customer(
     customer_id: uuid.UUID,
     payload: CustomerUpdateRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> CustomerOut:
@@ -108,6 +119,15 @@ async def update_customer(
 
     try:
         customer = await customer_service.update_customer(db, customer_id, payload.name, branch_ids)
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="customer.update",
+            target_type="customer",
+            target_id=str(customer_id),
+            after={"name": payload.name, "branch_codes": payload.branch_codes},
+            request=request,
+        )
         await db.commit()
     except customer_service.CustomerNotFoundError as exc:
         await db.rollback()
@@ -240,11 +260,22 @@ def _to_connector_out(client: Client) -> ConnectorOut:
 async def create_connector(
     customer_id: uuid.UUID,
     payload: ConnectorCreateRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> ConnectorCreateResponse:
     try:
         client, raw_secret = await customer_service.create_connector(db, customer_id, payload.name)
+        # Never the secret itself — this would defeat the "shown once" model (SecretOncePanel).
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="connector.create",
+            target_type="connector",
+            target_id=str(client.id),
+            after={"name": client.name, "customer_id": str(customer_id)},
+            request=request,
+        )
         await db.commit()
     except customer_service.CustomerNotFoundError as exc:
         await db.rollback()
@@ -271,6 +302,7 @@ async def list_connectors(
 async def revoke_connector(
     customer_id: uuid.UUID,
     client_id: uuid.UUID,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> ConnectorOut:
@@ -280,6 +312,16 @@ async def revoke_connector(
     """
     try:
         client = await customer_service.revoke_connector(db, customer_id, client_id)
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="connector.revoke",
+            target_type="connector",
+            target_id=str(client_id),
+            before={"revoked_at": None},
+            after={"revoked_at": client.revoked_at.isoformat() if client.revoked_at else None},
+            request=request,
+        )
         await db.commit()
     except customer_service.ConnectorNotFoundError as exc:
         await db.rollback()
@@ -294,6 +336,7 @@ async def revoke_connector(
 async def rotate_connector(
     customer_id: uuid.UUID,
     client_id: uuid.UUID,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> ConnectorCreateResponse:
@@ -306,6 +349,15 @@ async def rotate_connector(
     try:
         client, raw_secret = await customer_service.rotate_connector_secret(
             db, customer_id, client_id
+        )
+        # Never the secret itself — see create_connector's own note above.
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="connector.rotate",
+            target_type="connector",
+            target_id=str(client_id),
+            request=request,
         )
         await db.commit()
     except customer_service.ConnectorNotFoundError as exc:

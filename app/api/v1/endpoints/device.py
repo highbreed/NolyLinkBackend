@@ -3,13 +3,13 @@
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin
 from app.db.session import get_db
-from app.services import cmc_key_manager
+from app.services import admin_audit, cmc_key_manager
 from app.services.kra_adapter import KraAdapter, KraError
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ class DeviceInitResponse(BaseModel):
 @router.post("/initialize", response_model=DeviceInitResponse, status_code=201)
 async def initialize(
     payload: DeviceInitRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> DeviceInitResponse:
@@ -66,6 +67,20 @@ async def initialize(
             device_type=payload.device_type,
             kra_base_url_override=payload.kra_base_url_override,
             dvc_srl_no=payload.dvc_srl_no,
+        )
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="device.initialize",
+            target_type="branch",
+            target_id=str(branch.id),
+            after={
+                "branch_code": branch.branch_code,
+                "tin": branch.tin,
+                "bhf_id": branch.bhf_id,
+                "device_type": branch.device_type,
+            },
+            request=request,
         )
         await db.commit()
     except cmc_key_manager.DeviceAlreadyProvisionedButUnknown as exc:

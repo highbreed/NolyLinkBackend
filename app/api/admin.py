@@ -11,14 +11,14 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin_auth import require_admin
 from app.db.models import AdminUser
 from app.db.session import get_db
-from app.services import admin_user_auth
+from app.services import admin_audit, admin_user_auth
 
 logger = logging.getLogger(__name__)
 
@@ -78,12 +78,22 @@ def _to_out(user: AdminUser) -> AdminUserOut:
 @router.post("/users", response_model=AdminUserOut, status_code=201)
 async def create_user(
     payload: AdminUserCreateRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminUserOut:
     try:
         user = await admin_user_auth.create_admin_user(
             db, payload.username, payload.password, payload.full_name
+        )
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="admin_user.create",
+            target_type="admin_user",
+            target_id=str(user.id),
+            after={"username": user.username, "full_name": user.full_name},
+            request=request,
         )
         await db.commit()
     except admin_user_auth.UsernameAlreadyExistsError as exc:
@@ -110,12 +120,22 @@ class AdminUserUpdateRequest(BaseModel):
 async def update_user(
     user_id: uuid.UUID,
     payload: AdminUserUpdateRequest,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminUserOut:
     try:
         user = await admin_user_auth.update_admin_user(
             db, user_id, payload.username, payload.password, payload.full_name
+        )
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="admin_user.update",
+            target_type="admin_user",
+            target_id=str(user_id),
+            after={"username": user.username, "full_name": user.full_name},
+            request=request,
         )
         await db.commit()
     except admin_user_auth.AdminUserNotFoundError as exc:
@@ -132,11 +152,22 @@ async def update_user(
 @router.post("/users/{user_id}/deactivate", response_model=AdminUserOut)
 async def deactivate_user(
     user_id: uuid.UUID,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminUserOut:
     try:
         user = await admin_user_auth.deactivate_admin_user(db, user_id)
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="admin_user.deactivate",
+            target_type="admin_user",
+            target_id=str(user_id),
+            before={"is_active": True},
+            after={"is_active": False},
+            request=request,
+        )
         await db.commit()
     except admin_user_auth.AdminUserNotFoundError as exc:
         await db.rollback()
@@ -149,11 +180,22 @@ async def deactivate_user(
 @router.post("/users/{user_id}/reactivate", response_model=AdminUserOut)
 async def reactivate_user(
     user_id: uuid.UUID,
+    request: Request,
     admin_actor: str = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AdminUserOut:
     try:
         user = await admin_user_auth.reactivate_admin_user(db, user_id)
+        await admin_audit.record_admin_action(
+            db,
+            actor=admin_actor,
+            action="admin_user.reactivate",
+            target_type="admin_user",
+            target_id=str(user_id),
+            before={"is_active": False},
+            after={"is_active": True},
+            request=request,
+        )
         await db.commit()
     except admin_user_auth.AdminUserNotFoundError as exc:
         await db.rollback()
