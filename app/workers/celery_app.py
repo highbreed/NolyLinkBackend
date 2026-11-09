@@ -17,6 +17,7 @@ celery_app = Celery(
         "app.workers.outbox_dispatcher",
         "app.workers.vscu_poller",
         "app.workers.cleanup",
+        "app.workers.alert_evaluator",
     ],
 )
 
@@ -58,6 +59,10 @@ celery_app.conf.update(
         "cleanup-client-call-log": {
             "task": "cleanup.client_call_log",
             "schedule": 24 * 60 * 60,
+        },
+        "evaluate-alert-rules": {
+            "task": "alert_evaluator.evaluate_alert_rules",
+            "schedule": 5 * 60,
         },
         # VSCU pollers reuse the exact same intervals as their OSCU counterparts — same
         # underlying KRA resources, just a different transport per Branch.device_type.

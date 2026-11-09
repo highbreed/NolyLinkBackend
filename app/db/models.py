@@ -733,3 +733,53 @@ class AdminAuditLog(Base):
     ip_address: Mapped[str | None] = mapped_column(String)
     request_id: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class AlertRule(Base):
+    """A threshold rule over one of metrics_service.KNOWN_METRICS, evaluated every 5 minutes
+    by app/workers/alert_evaluator.py. scope_customer_id/scope_branch_code are two columns,
+    not the single `scope` text column admin_portal_design.md's §7 SQL proposes — the
+    frontend's AlertRule/AlertRuleInput TS types already committed to the split-column
+    version, so matching that stale doc would be pure wasted translation now.
+    """
+
+    __tablename__ = "alert_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String)
+    metric: Mapped[str] = mapped_column(String)
+    scope_customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id")
+    )
+    scope_branch_code: Mapped[str | None] = mapped_column(String)
+    condition: Mapped[str] = mapped_column(String)
+    threshold: Mapped[Decimal] = mapped_column(Numeric)
+    channel: Mapped[str] = mapped_column(String)
+    channel_target: Mapped[str] = mapped_column(String)
+    enabled: Mapped[bool] = mapped_column(default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class NotificationSent(Base):
+    """One row per alert-rule firing, written by app/workers/alert_evaluator.py. There is no
+    resolved_at tracking yet (always None) — that needs knowing when a firing rule's metric
+    drops back below threshold, which this first pass doesn't attempt; a fired notification is
+    a point-in-time event here, not an ongoing incident with a lifecycle.
+
+    delivered=False + delivery_error is the normal, expected state for channel="email" until
+    real SMTP settings exist (no credentials were available when this was built) — not a bug.
+    """
+
+    __tablename__ = "notifications_sent"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    alert_rule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("alert_rules.id"), index=True
+    )
+    fired_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column()
+    metric_value: Mapped[Decimal] = mapped_column(Numeric)
+    summary: Mapped[str] = mapped_column(String)
+    delivered: Mapped[bool] = mapped_column(default=False, server_default="false")
+    delivery_error: Mapped[str | None] = mapped_column(String)

@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    admin_alert_rules,
     admin_audit_log,
     admin_client_calls,
     admin_dashboard,
@@ -46,6 +47,12 @@ api_router.include_router(
 )
 api_router.include_router(
     admin_audit_log.router, prefix="/admin/audit-log", tags=["admin"]
+)
+api_router.include_router(
+    admin_alert_rules.router, prefix="/admin/alert-rules", tags=["admin"]
+)
+api_router.include_router(
+    admin_alert_rules.notifications_router, prefix="/admin/notifications", tags=["admin"]
 )
 api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])

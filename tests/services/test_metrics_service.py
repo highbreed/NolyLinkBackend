@@ -5,6 +5,8 @@ dashboard/alert metric, reused by admin_monitoring.py and (later) the alert-rule
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.db.models import Branch, Customer, KraCallLog, KraSyncState, Outbox, Subscription, VscuCallLog
 from app.services import metrics_service
 
@@ -132,6 +134,146 @@ async def test_stale_branch_count_counts_missing_and_old_sync_rows(db_session):
     stale = await metrics_service.stale_branch_count(db_session, threshold_hours=24)
     # Missing + old = 2. The fresh one isn't stale. The INACTIVE branch is never counted.
     assert stale == 2
+
+
+async def test_kra_call_success_rate_scoped_to_one_branch(db_session):
+    branch_a = Branch(branch_code="BR-SCOPE-A", tin=_tin(), bhf_id="00", cmc_key="c" * 10)
+    branch_b = Branch(branch_code="BR-SCOPE-B", tin=_tin(), bhf_id="00", cmc_key="c" * 10)
+    db_session.add_all([branch_a, branch_b])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            KraCallLog(branch_id=branch_a.id, endpoint="/e", request_hash="h", result_cd="000"),
+            KraCallLog(branch_id=branch_a.id, endpoint="/e", request_hash="h", result_cd="999"),
+            KraCallLog(branch_id=branch_b.id, endpoint="/e", request_hash="h", result_cd="000"),
+        ]
+    )
+    await db_session.flush()
+
+    rate_a = await metrics_service.kra_call_success_rate(db_session, hours=1, branch_code="BR-SCOPE-A")
+    assert rate_a == 0.5
+    rate_unknown = await metrics_service.kra_call_success_rate(db_session, hours=1, branch_code="nope")
+    assert rate_unknown is None
+
+
+async def test_outbox_counts_scoped_to_one_branch(db_session):
+    branch = Branch(branch_code="BR-SCOPE-C", tin=_tin(), bhf_id="00", cmc_key="c" * 10)
+    db_session.add(branch)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Outbox(endpoint="/e", payload={}, status="FAILED", branch_id=branch.id),
+            Outbox(endpoint="/e", payload={}, status="FAILED"),
+        ]
+    )
+    await db_session.flush()
+
+    counts = await metrics_service.outbox_counts(db_session, branch_code="BR-SCOPE-C")
+    assert counts.failed == 1
+
+
+async def test_grace_days_remaining(db_session):
+    customer = Customer(name="Grace Co", allowed_branch_ids=[])
+    db_session.add(customer)
+    await db_session.flush()
+
+    # Not yet past period end — no meaningful grace value.
+    db_session.add(
+        Subscription(
+            customer_id=customer.id,
+            plan_name="STANDARD",
+            status="ACTIVE",
+            current_period_end=datetime.now(UTC) + timedelta(days=1),
+            grace_period_days=7,
+        )
+    )
+    await db_session.flush()
+    assert await metrics_service.grace_days_remaining(db_session, customer.id) is None
+
+
+async def test_grace_days_remaining_within_grace_window(db_session):
+    customer = Customer(name="Grace Co 2", allowed_branch_ids=[])
+    db_session.add(customer)
+    await db_session.flush()
+    db_session.add(
+        Subscription(
+            customer_id=customer.id,
+            plan_name="STANDARD",
+            status="ACTIVE",
+            current_period_end=datetime.now(UTC) - timedelta(days=2),
+            grace_period_days=7,
+        )
+    )
+    await db_session.flush()
+
+    remaining = await metrics_service.grace_days_remaining(db_session, customer.id)
+    assert remaining is not None
+    assert 4.9 < remaining < 5.1
+
+
+async def test_grace_days_remaining_past_grace_or_wrong_status_is_none(db_session):
+    past_grace = Customer(name="Past Grace Co", allowed_branch_ids=[])
+    suspended = Customer(name="Suspended Co", allowed_branch_ids=[])
+    db_session.add_all([past_grace, suspended])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Subscription(
+                customer_id=past_grace.id,
+                plan_name="STANDARD",
+                status="ACTIVE",
+                current_period_end=datetime.now(UTC) - timedelta(days=30),
+                grace_period_days=7,
+            ),
+            Subscription(
+                customer_id=suspended.id,
+                plan_name="STANDARD",
+                status="SUSPENDED",
+                current_period_end=datetime.now(UTC) - timedelta(days=2),
+                grace_period_days=7,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    assert await metrics_service.grace_days_remaining(db_session, past_grace.id) is None
+    assert await metrics_service.grace_days_remaining(db_session, suspended.id) is None
+
+
+async def test_get_current_metric_value_dispatches_per_metric(db_session):
+    branch = Branch(branch_code="BR-DISPATCH", tin=_tin(), bhf_id="00", cmc_key="c" * 10)
+    db_session.add(branch)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            KraCallLog(branch_id=branch.id, endpoint="/e", request_hash="h", result_cd="999"),
+            Outbox(endpoint="/e", payload={}, status="FAILED", branch_id=branch.id),
+        ]
+    )
+    await db_session.flush()
+
+    failure_rate = await metrics_service.get_current_metric_value(
+        db_session, "kra_call_failure_rate", scope_branch_code="BR-DISPATCH"
+    )
+    assert failure_rate == 1.0
+
+    outbox_failed = await metrics_service.get_current_metric_value(
+        db_session, "outbox_failed_count", scope_branch_code="BR-DISPATCH"
+    )
+    assert outbox_failed == 1.0
+
+    sync_lag = await metrics_service.get_current_metric_value(
+        db_session, "sync_lag_seconds", scope_branch_code="BR-DISPATCH"
+    )
+    assert sync_lag is None  # no KraSyncState row seeded
+
+    grace = await metrics_service.get_current_metric_value(
+        db_session, "subscription_grace_period_ending", scope_customer_id=None
+    )
+    assert grace is None
+
+    with pytest.raises(ValueError):
+        await metrics_service.get_current_metric_value(db_session, "not_a_real_metric")
 
 
 async def test_blocked_customer_count_matches_frontend_blocked_bucket(db_session):

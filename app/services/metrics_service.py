@@ -8,6 +8,7 @@ app/services/kra_adapter.py's own definition exactly — "001" (no search result
 result, not an error (spec).
 """
 
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -20,18 +21,34 @@ from app.db.models import Branch, KraCallLog, KraSyncState, Outbox, Subscription
 SUCCESS_RESULT_CODES = ("000", "001")
 
 
-async def kra_call_success_rate(db: AsyncSession, hours: int) -> float | None:
+async def branch_id_for_code(db: AsyncSession, branch_code: str) -> uuid.UUID | None:
+    branch = await db.scalar(select(Branch).where(Branch.branch_code == branch_code))
+    return branch.id if branch is not None else None
+
+
+async def kra_call_success_rate(
+    db: AsyncSession, hours: int, branch_code: str | None = None
+) -> float | None:
     """Fraction (0.0-1.0) of KraCallLog + VscuCallLog rows in the last `hours` whose
     result_cd indicates success. None if there were no calls at all in that window (there is
-    no meaningful rate to report, not a 0% or 100% one).
+    no meaningful rate to report, not a 0% or 100% one), including when branch_code names a
+    branch with no calls, or no branch at all.
     """
     since = datetime.now(UTC) - timedelta(hours=hours)
-    kra_codes = (
-        await db.execute(select(KraCallLog.result_cd).where(KraCallLog.created_at >= since))
-    ).scalars().all()
-    vscu_codes = (
-        await db.execute(select(VscuCallLog.result_cd).where(VscuCallLog.created_at >= since))
-    ).scalars().all()
+    branch_id: uuid.UUID | None = None
+    if branch_code is not None:
+        branch_id = await branch_id_for_code(db, branch_code)
+        if branch_id is None:
+            return None
+
+    kra_stmt = select(KraCallLog.result_cd).where(KraCallLog.created_at >= since)
+    vscu_stmt = select(VscuCallLog.result_cd).where(VscuCallLog.created_at >= since)
+    if branch_id is not None:
+        kra_stmt = kra_stmt.where(KraCallLog.branch_id == branch_id)
+        vscu_stmt = vscu_stmt.where(VscuCallLog.branch_id == branch_id)
+
+    kra_codes = (await db.execute(kra_stmt)).scalars().all()
+    vscu_codes = (await db.execute(vscu_stmt)).scalars().all()
     all_codes = list(kra_codes) + list(vscu_codes)
     if not all_codes:
         return None
@@ -57,8 +74,14 @@ class OutboxCounts:
         }
 
 
-async def outbox_counts(db: AsyncSession) -> OutboxCounts:
-    rows = (await db.execute(select(Outbox.status))).scalars().all()
+async def outbox_counts(db: AsyncSession, branch_code: str | None = None) -> OutboxCounts:
+    stmt = select(Outbox.status)
+    if branch_code is not None:
+        branch_id = await branch_id_for_code(db, branch_code)
+        if branch_id is None:
+            return OutboxCounts()
+        stmt = stmt.where(Outbox.branch_id == branch_id)
+    rows = (await db.execute(stmt)).scalars().all()
     counts = OutboxCounts()
     for status in rows:
         if status == "PENDING":
@@ -160,3 +183,69 @@ async def blocked_customer_count(db: AsyncSession) -> int:
 async def worst_sync_offender(db: AsyncSession) -> SyncStatusRow | None:
     rows = await sync_status(db)
     return rows[0] if rows else None
+
+
+async def grace_days_remaining(db: AsyncSession, customer_id: uuid.UUID) -> float | None:
+    """Mirrors src/lib/billingStatus.ts's "GRACE" bucket exactly: an ACTIVE-status
+    subscription whose current_period_end has passed but grace hasn't yet. None if there's no
+    subscription, it's SUSPENDED/CANCELLED, still within its paid period, or already past
+    grace (that's blocked_customer_count's concern, not this one) — "no meaningful value",
+    same convention as kra_call_success_rate returning None for an empty window.
+    """
+    settings = get_settings()
+    sub = await db.scalar(select(Subscription).where(Subscription.customer_id == customer_id))
+    if sub is None or sub.status in ("CANCELLED", "SUSPENDED"):
+        return None
+    now = datetime.now(UTC)
+    if now <= sub.current_period_end:
+        return None
+    grace_days = (
+        sub.grace_period_days if sub.grace_period_days is not None else settings.billing_grace_period_days
+    )
+    grace_end = sub.current_period_end + timedelta(days=grace_days)
+    if now > grace_end:
+        return None
+    return (grace_end - now).total_seconds() / 86400
+
+
+KNOWN_METRICS = (
+    "kra_call_failure_rate",
+    "outbox_failed_count",
+    "sync_lag_seconds",
+    "subscription_grace_period_ending",
+)
+
+# Metrics an alert rule can genuinely backtest over real history (append-only, timestamped
+# rows exist to look back over). The other three only know the CURRENT value — see
+# get_current_metric_value's and the alert-rules preview endpoint's own docstrings.
+HISTORICALLY_BACKTESTABLE_METRICS = ("kra_call_failure_rate",)
+
+
+async def get_current_metric_value(
+    db: AsyncSession,
+    metric: str,
+    *,
+    scope_customer_id: uuid.UUID | None = None,
+    scope_branch_code: str | None = None,
+) -> float | None:
+    """The one place "what is metric X worth right now, for this scope" is computed — reused
+    by the alert-rule preview (current-state fallback for the 3 non-backtestable metrics) and
+    the periodic evaluator, so those two can never silently diverge.
+
+    scope_customer_id only has meaning for subscription_grace_period_ending (a per-customer
+    concept); scope_branch_code only has meaning for the other three (a per-branch concept) —
+    passing the "wrong" scope kind for a metric is simply ignored, not an error.
+    """
+    if metric == "kra_call_failure_rate":
+        rate = await kra_call_success_rate(db, hours=1, branch_code=scope_branch_code)
+        return None if rate is None else round(1.0 - rate, 4)
+    if metric == "outbox_failed_count":
+        return float((await outbox_counts(db, branch_code=scope_branch_code)).failed)
+    if metric == "sync_lag_seconds":
+        rows = await sync_status(db, branch_code=scope_branch_code)
+        return rows[0].lag_seconds if rows else None
+    if metric == "subscription_grace_period_ending":
+        if scope_customer_id is None:
+            return None
+        return await grace_days_remaining(db, scope_customer_id)
+    raise ValueError(f"Unknown metric: {metric!r}")
