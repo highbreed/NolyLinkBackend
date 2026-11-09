@@ -78,6 +78,7 @@ async def initialize_device(
     bhf_id: str,
     device_type: str = "OSCU",
     kra_base_url_override: str | None = None,
+    dvc_srl_no: str | None = None,
 ) -> Branch:
     """POST /v1/devices/initialize's core logic. Persists cmcKey/dvcId/sdcId/mrcNo into
     `branches`, encrypted at rest, keyed by (tin, bhfId) with branch_code as the only
@@ -85,11 +86,16 @@ async def initialize_device(
 
     device_type="VSCU" skips real KRA entirely — see _register_vscu_branch_locally.
     kra_base_url_override is OSCU-only and ignored in that case (nothing left to override).
+
+    dvc_srl_no: normally we invent this ourselves (generate_dvc_srl_no, spec §12.2 — "we
+    control dvcSrlNo"), but KRA UAT/certification sometimes pre-assigns a specific physical/
+    virtual device serial for a given tin+bhfId that must be used verbatim instead. Pass it
+    explicitly in that case; omit it for the normal self-generated case.
     """
     if device_type == "VSCU":
         return await _register_vscu_branch_locally(db, branch_code, tin, bhf_id)
 
-    dvc_srl_no = generate_dvc_srl_no(tin, bhf_id)
+    dvc_srl_no = dvc_srl_no or generate_dvc_srl_no(tin, bhf_id)
     req = DeviceVerificationReq(tin=tin, bhfId=bhf_id, dvcSrlNo=dvc_srl_no)
 
     try:

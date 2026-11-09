@@ -277,6 +277,34 @@ class VSCUSalesService:
         # transmitted"), so it's reported with the exact transmitted-message sentinel to
         # classify as FISCALIZED below, not SIGNED_PENDING_TRANSMISSION.
         receipt = matched.receipt
+
+        # Update any existing SalesInvoice row this confirms — e.g. ops-driven reconciliation
+        # (POST /v1/vscu/{branch_id}/sales/{invc_no}/reconcile) run well after the original
+        # submission, which previously left a SIGNED_PENDING_TRANSMISSION row stuck that way
+        # forever even once KRA had genuinely confirmed transmission. A no-op when called
+        # from _submit_via_mapper's own ambiguous-result cases above (that row doesn't exist
+        # yet at this point — it's created by the caller right after this returns).
+        existing = await self._db.scalar(
+            select(SalesInvoice).where(
+                SalesInvoice.branch_id == branch.id, SalesInvoice.kra_invc_no == invc_no
+            )
+        )
+        if existing is not None and existing.status != STATUS_FISCALIZED:
+            existing.status = STATUS_FISCALIZED
+            existing.kra_cur_rcpt_no = int(receipt.curRcptNo) if receipt.curRcptNo else None
+            existing.kra_tot_rcpt_no = int(receipt.totRcptNo) if receipt.totRcptNo else None
+            existing.kra_rcpt_sign = receipt.rcptSign
+            existing.kra_intrl_data = receipt.intrlData
+            existing.kra_sdc_datetime = receipt.sdcDateTime or receipt.rcptPbctDt
+            await self._db.flush()
+            logger.info(
+                "Reconciliation confirmed transmission for branch=%s invcNo=%s — "
+                "SalesInvoice external_ref=%s updated to FISCALIZED",
+                branch.id,
+                invc_no,
+                existing.external_ref,
+            )
+
         return TrnsSalesSaveWrRes(
             resultCd="000",
             resultMsg=_TRANSMITTED_MESSAGE,

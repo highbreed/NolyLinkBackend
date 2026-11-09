@@ -29,6 +29,10 @@ class DeviceInitRequest(BaseModel):
     # OSCU case, which keeps using the global Settings.kra_base_url.
     device_type: Literal["OSCU", "VSCU"] = "OSCU"
     kra_base_url_override: str | None = None
+    # Normally omitted — we invent our own (spec §12.2). Set this when KRA has pre-assigned a
+    # specific device serial for this tin+bhfId (e.g. a UAT/certification device) that must be
+    # used verbatim instead of one we generate.
+    dvc_srl_no: str | None = None
 
 
 class DeviceInitResponse(BaseModel):
@@ -61,6 +65,7 @@ async def initialize(
             payload.bhf_id,
             device_type=payload.device_type,
             kra_base_url_override=payload.kra_base_url_override,
+            dvc_srl_no=payload.dvc_srl_no,
         )
         await db.commit()
     except cmc_key_manager.DeviceAlreadyProvisionedButUnknown as exc:

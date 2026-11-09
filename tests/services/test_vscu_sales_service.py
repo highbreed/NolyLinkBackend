@@ -269,6 +269,71 @@ async def test_duplicate_submission_reconciles_via_invoice_details(
     assert response["rcptSign"] == "2" * 16
 
 
+async def test_standalone_reconciliation_updates_stuck_pending_invoice(
+    db_session, branch: Branch, vscu_client: VSCUClient
+):
+    """Ops-driven reconciliation (POST /v1/vscu/{branch_id}/sales/{invc_no}/reconcile) run
+    well after the original submission — e.g. a VSCU sale left SIGNED_PENDING_TRANSMISSION for
+    an extended period — must actually flip that SalesInvoice's status once KRA confirms real
+    transmission, not just report the confirmation back without persisting it. A real
+    production case (2026-10-16 invoices) sat SIGNED_PENDING_TRANSMISSION for 3+ weeks despite
+    reconciliation confirming them as fiscalized, because this update never happened.
+    """
+    stuck = SalesInvoice(
+        branch_id=branch.id,
+        external_ref="STUCK-PENDING-1",
+        transaction_kind="SALE",
+        kra_invc_no=7,
+        kra_cur_rcpt_no=7,
+        kra_tot_rcpt_no=7,
+        kra_rcpt_sign="OLD" + "9" * 13,
+        kra_intrl_data="OLD" + "8" * 23,
+        kra_sdc_datetime="20260901120000",
+        kra_sdc_id="SDC001",
+        status=STATUS_SIGNED_PENDING_TRANSMISSION,
+    )
+    db_session.add(stuck)
+    await db_session.flush()
+
+    service = VSCUSalesService(db_session, vscu_client)
+    with respx.mock:
+        respx.post(f"{VSCU_URL}/trnsSales/selectInvoiceDetails").mock(
+            return_value=Response(
+                200,
+                json={
+                    "resultCd": "000",
+                    "resultMsg": "ok",
+                    "resultDt": "20260901130000",
+                    "data": {
+                        "salesList": [
+                            {
+                                "invcNo": 7,
+                                "itemList": [],
+                                "receipt": {
+                                    "curRcptNo": "7",
+                                    "totRcptNo": "7",
+                                    "intrlData": "2" * 26,
+                                    "rcptSign": "3" * 16,
+                                    "sdcDateTime": "20260901130000",
+                                },
+                            }
+                        ]
+                    },
+                },
+            )
+        )
+        result = await service.reconcile_by_invoice_number(branch, 7)
+
+    assert result is not None
+    assert result.resultMsg == "The request has been processed successfully"
+
+    await db_session.refresh(stuck)
+    assert stuck.status == STATUS_FISCALIZED
+    assert stuck.kra_rcpt_sign == "3" * 16
+    assert stuck.kra_intrl_data == "2" * 26
+    assert stuck.kra_sdc_datetime == "20260901130000"
+
+
 async def test_duplicate_submission_unresolvable_reraises_and_releases_claim(
     db_session, branch: Branch, vscu_client: VSCUClient, client: Client
 ):
