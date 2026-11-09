@@ -376,7 +376,7 @@ server {
     }
 
     location = /v1/health {
-        proxy_pass http://unix:$SOCKET_PATH/v1/health;
+        proxy_pass http://unix:$SOCKET_PATH:/v1/health;
         proxy_set_header Host \$host;
     }
 }
