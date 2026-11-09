@@ -12,7 +12,12 @@ celery_app = Celery(
     "oscu_gateway",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.workers.poller", "app.workers.outbox_dispatcher", "app.workers.vscu_poller"],
+    include=[
+        "app.workers.poller",
+        "app.workers.outbox_dispatcher",
+        "app.workers.vscu_poller",
+        "app.workers.cleanup",
+    ],
 )
 
 celery_app.conf.update(
@@ -49,6 +54,10 @@ celery_app.conf.update(
         "dispatch-outbox": {
             "task": "outbox_dispatcher.dispatch_pending",
             "schedule": settings.kra_outbox_dispatch_interval_seconds,
+        },
+        "cleanup-client-call-log": {
+            "task": "cleanup.client_call_log",
+            "schedule": 24 * 60 * 60,
         },
         # VSCU pollers reuse the exact same intervals as their OSCU counterparts — same
         # underlying KRA resources, just a different transport per Branch.device_type.

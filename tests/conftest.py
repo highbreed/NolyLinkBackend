@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import get_settings
+from app.db import session as db_session_module
 from app.db.models import Base
 
 
@@ -67,12 +68,21 @@ async def db_engine() -> AsyncGenerator[AsyncEngine, None]:
 
 
 @pytest_asyncio.fixture
-async def db_session(db_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(db_engine: AsyncEngine, monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     async with db_engine.connect() as conn:
         trans = await conn.begin()
         session_factory = async_sessionmaker(
             bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
         )
+        # AuditLogMiddleware (app/core/audit.py) opens its own session via
+        # app.db.session.AsyncSessionLocal on every request, independent of any per-endpoint
+        # get_db override — unlike outbox_dispatcher's _dispatch_pending, nothing calls it
+        # directly with an explicit session_factory, since it's wired into every HTTP
+        # round-trip, not invoked directly in tests. Binding it to this SAME connection (not
+        # a fresh one from db_engine) is required, not just nice-to-have: a fresh connection
+        # can't see this transaction's uncommitted fixture rows (e.g. a just-created Client),
+        # so a real request touching client_call_log's client_id FK would fail otherwise.
+        monkeypatch.setattr(db_session_module, "AsyncSessionLocal", session_factory)
         async with session_factory() as session:
             yield session
         await trans.rollback()

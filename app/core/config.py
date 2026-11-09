@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # schedule itself (30s/2m/10m/1h) — this just bounds how promptly a due retry is noticed.
     kra_outbox_dispatch_interval_seconds: int = 30
 
+    # client_call_log (app/db/models.py) persists raw, redacted request/response bodies —
+    # fiscal-PII-adjacent even after redaction, so it's not kept forever. app/workers/cleanup.py
+    # deletes rows older than this, daily.
+    client_call_log_retention_days: int = 30
+
     # Per-client rate limit (spec §15), a fixed-window counter in Redis. Not specified by the
     # spec — a config flag rather than a hardcoded guess.
     client_rate_limit_per_minute: int = 120

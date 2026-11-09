@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    admin_client_calls,
     admin_dashboard,
     admin_reference_data,
     billing,
@@ -34,6 +35,9 @@ api_router.include_router(customers.router, prefix="/customers", tags=["customer
 api_router.include_router(admin_dashboard.router, prefix="/admin", tags=["admin"])
 api_router.include_router(
     admin_reference_data.router, prefix="/admin/reference-data", tags=["admin"]
+)
+api_router.include_router(
+    admin_client_calls.router, prefix="/admin/client-calls", tags=["admin"]
 )
 api_router.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])

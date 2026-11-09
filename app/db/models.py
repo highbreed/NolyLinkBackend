@@ -672,3 +672,34 @@ class NoticeCache(Base):
     regr_nm: Mapped[str | None] = mapped_column(String)
     reg_dt: Mapped[str | None] = mapped_column(String)
     synced_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class ClientCallLog(Base):
+    """Persisted record of every inbound HTTP call this gateway received and what it answered
+    — not to be confused with KraCallLog/VscuCallLog (our calls TO KRA/VSCU). Written by
+    AuditLogMiddleware (app/core/audit.py) alongside its existing stdout logging, so "what did
+    a client actually send us, and what did we send back" is queryable from the admin portal
+    instead of living only in transient log output. Bodies are redacted the same way the
+    stdout audit log already is (app.core.audit._redact/REDACTED_KEYS).
+
+    Cleaned up after client_call_log_retention_days (app/workers/cleanup.py) — raw request/
+    response bodies are fiscal-PII-adjacent even after redaction, so this is not kept forever.
+    """
+
+    __tablename__ = "client_call_log"
+    __table_args__ = (
+        Index("ix_client_call_log_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String, index=True)
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clients.id"), index=True
+    )
+    method: Mapped[str] = mapped_column(String)
+    path: Mapped[str] = mapped_column(String)
+    status_code: Mapped[int] = mapped_column()
+    duration_ms: Mapped[int] = mapped_column()
+    request_body: Mapped[dict[str, object] | list[object] | str | None] = mapped_column(JSONB)
+    response_body: Mapped[dict[str, object] | list[object] | str | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
